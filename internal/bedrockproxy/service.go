@@ -211,6 +211,25 @@ func (s *Service) ConverseStream(
 		return ChatResult{}, err
 	}
 
+	// 调试日志：打印工具配置
+	if toolConfig != nil {
+		toolChoiceType := "nil"
+		if toolConfig.ToolChoice != nil {
+			switch toolConfig.ToolChoice.(type) {
+			case *brtypes.ToolChoiceMemberAuto:
+				toolChoiceType = "auto"
+			case *brtypes.ToolChoiceMemberAny:
+				toolChoiceType = "any (required)"
+			case *brtypes.ToolChoiceMemberTool:
+				toolChoiceType = "specific tool"
+			default:
+				toolChoiceType = fmt.Sprintf("%T", toolConfig.ToolChoice)
+			}
+		}
+		fmt.Printf("[DEBUG] ConverseStream: forceToolUse=%v, tools=%d, toolChoice=%s\n",
+			forceToolUse, len(toolConfig.Tools), toolChoiceType)
+	}
+
 	s.mu.RLock()
 	client := s.client
 	defaultMaxOutputToken := s.defaultMaxOutputToken
