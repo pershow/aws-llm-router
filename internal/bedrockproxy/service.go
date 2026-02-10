@@ -125,6 +125,10 @@ func (s *Service) ListModelAliases() []string {
 }
 
 func (s *Service) Converse(ctx context.Context, request openai.ChatCompletionRequest, bedrockModelID string) (ChatResult, error) {
+	// Fix messages: ensure tool_call IDs and fix missing tool responses
+	request.Messages = openai.EnsureToolCallIDs(request.Messages)
+	request.Messages = openai.FixMissingToolResponses(request.Messages)
+
 	messages, system, err := BuildBedrockMessages(request.Messages)
 	if err != nil {
 		return ChatResult{}, err
@@ -181,6 +185,10 @@ func (s *Service) ConverseStream(
 	bedrockModelID string,
 	onDelta func(delta StreamDelta) error,
 ) (ChatResult, error) {
+	// Fix messages: ensure tool_call IDs and fix missing tool responses
+	request.Messages = openai.EnsureToolCallIDs(request.Messages)
+	request.Messages = openai.FixMissingToolResponses(request.Messages)
+
 	messages, system, err := BuildBedrockMessages(request.Messages)
 	if err != nil {
 		return ChatResult{}, err

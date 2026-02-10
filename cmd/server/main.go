@@ -144,9 +144,13 @@ func main() {
 	registerAdminRoutes(mux, app)
 	mux.Handle(adminStaticPath(), app.adminStatic)
 
+	// 应用中间件：调试中间件 -> 日志中间件 -> 路由
+	handler := loggingMiddleware(logger, mux)
+	handler = debugMiddleware(logger, handler)
+
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           loggingMiddleware(logger, mux),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
