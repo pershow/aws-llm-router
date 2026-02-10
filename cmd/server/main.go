@@ -104,9 +104,18 @@ func main() {
 		log.Fatalf("failed to initialize auth clients: %v", err)
 	}
 
-	// 打印关键配置
-	logger.Printf("配置: ForceToolUse=%v, DefaultModelID=%s, DefaultMaxOutputToken=%d",
-		cfg.ForceToolUse, cfg.DefaultModelID, cfg.DefaultMaxOutputToken)
+	// 打印关键配置 - 使用醒目的格式
+	logger.Printf("========================================")
+	logger.Printf("🔧 关键配置:")
+	logger.Printf("   FORCE_TOOL_USE = %v", cfg.ForceToolUse)
+	logger.Printf("   DEFAULT_MODEL_ID = %s", cfg.DefaultModelID)
+	logger.Printf("   DEFAULT_MAX_OUTPUT_TOKENS = %d", cfg.DefaultMaxOutputToken)
+	logger.Printf("========================================")
+	if cfg.ForceToolUse {
+		logger.Printf("✅ 强制工具调用已启用：当请求包含 tools 时，模型将被强制调用工具")
+	} else {
+		logger.Printf("⚠️ 强制工具调用未启用：模型可能选择不调用工具")
+	}
 
 	proxy := bedrockproxy.NewService(
 		nil,

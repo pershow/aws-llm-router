@@ -112,6 +112,28 @@ func (a *App) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 关键调试日志：打印请求中的工具信息
+	a.logger.Printf("========== 请求处理开始 ==========")
+	a.logger.Printf("模型: %s, 流式: %v, 工具数量: %d", request.Model, request.Stream, len(request.Tools))
+	if len(request.Tools) > 0 {
+		toolNames := make([]string, 0, len(request.Tools))
+		for _, tool := range request.Tools {
+			if tool.Function != nil {
+				toolNames = append(toolNames, tool.Function.Name)
+			}
+		}
+		a.logger.Printf("工具列表: %v", toolNames)
+	} else {
+		a.logger.Printf("⚠️ 请求中没有工具定义！")
+	}
+	if len(request.ToolChoice) > 0 {
+		a.logger.Printf("tool_choice: %s", string(request.ToolChoice))
+	} else {
+		a.logger.Printf("tool_choice: (未设置)")
+	}
+	a.logger.Printf("FORCE_TOOL_USE 配置: %v", a.cfg.ForceToolUse)
+	a.logger.Printf("===================================")
+
 	resolvedModel, bedrockModelID, err := a.proxy.ResolveModel(request.Model)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
@@ -518,6 +540,18 @@ func (a *App) handleChatCompletionsStream(
 	}
 
 	finishReason := defaultFinishReason(result.FinishReason)
+	
+	// 调试日志：打印流式响应结果
+	a.logger.Printf("========== 流式响应完成 ==========")
+	a.logger.Printf("finish_reason: %s (原始: %s)", finishReason, result.FinishReason)
+	a.logger.Printf("工具调用数量: %d", len(result.ToolCalls))
+	if len(result.ToolCalls) > 0 {
+		for i, tc := range result.ToolCalls {
+			a.logger.Printf("  工具调用 %d: id=%s, name=%s", i+1, tc.ID, tc.Function.Name)
+		}
+	}
+	a.logger.Printf("===================================")
+	
 	if err := writeSSEData(w, openai.ChatCompletionChunk{
 		ID:      chunkID,
 		Object:  "chat.completion.chunk",

@@ -292,6 +292,9 @@ func (s *Service) ConverseStream(
 				toolName = "unknown_tool"
 			}
 
+			// 调试日志：工具调用开始
+			fmt.Printf("[DEBUG ConverseStream] 🔧 工具调用开始: index=%d, id=%s, name=%s\n", toolCallIndex, toolCallID, toolName)
+
 			toolCalls = append(toolCalls, openai.ToolCall{
 				ID:   toolCallID,
 				Type: "function",
@@ -358,6 +361,9 @@ func (s *Service) ConverseStream(
 			}
 		case *brtypes.ConverseStreamOutputMemberMessageStop:
 			result.FinishReason = mapStopReason(value.Value.StopReason)
+			// 调试日志：消息结束
+			fmt.Printf("[DEBUG ConverseStream] 📍 消息结束: stopReason=%s, mappedFinishReason=%s, toolCallsCount=%d\n",
+				value.Value.StopReason, result.FinishReason, len(toolCalls))
 		case *brtypes.ConverseStreamOutputMemberMetadata:
 			if value.Value.Usage != nil {
 				result.InputTokens = int(ptrInt32(value.Value.Usage.InputTokens))
@@ -562,7 +568,12 @@ func parseToolResultContent(raw json.RawMessage) ([]brtypes.ToolResultContentBlo
 }
 
 func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, forceToolUse bool) (*brtypes.ToolConfiguration, error) {
+	// 调试日志：打印输入参数
+	fmt.Printf("[DEBUG buildToolConfiguration] 输入: tools=%d, rawToolChoice=%s, forceToolUse=%v\n",
+		len(tools), string(rawToolChoice), forceToolUse)
+
 	bedrockTools := make([]brtypes.Tool, 0, len(tools))
+	toolNames := make([]string, 0, len(tools))
 	for _, item := range tools {
 		toolType := strings.ToLower(strings.TrimSpace(item.Type))
 		if toolType == "" {
@@ -576,6 +587,7 @@ func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, 
 		if functionName == "" {
 			return nil, errors.New("tool function name is required")
 		}
+		toolNames = append(toolNames, functionName)
 
 		schema := map[string]any{
 			"type":       "object",
@@ -604,7 +616,10 @@ func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, 
 		bedrockTools = append(bedrockTools, &brtypes.ToolMemberToolSpec{Value: spec})
 	}
 
+	fmt.Printf("[DEBUG buildToolConfiguration] 解析到的工具: %v\n", toolNames)
+
 	if len(bedrockTools) == 0 {
+		fmt.Printf("[DEBUG buildToolConfiguration] 没有有效的工具，返回 nil\n")
 		return nil, nil
 	}
 
@@ -613,6 +628,7 @@ func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, 
 		return nil, err
 	}
 	if disableTools {
+		fmt.Printf("[DEBUG buildToolConfiguration] tool_choice=none，禁用工具\n")
 		return nil, nil
 	}
 
@@ -627,12 +643,33 @@ func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, 
 		if toolChoice == nil || isAuto {
 			// 强制使用 any (required)，模型必须调用工具
 			cfg.ToolChoice = &brtypes.ToolChoiceMemberAny{Value: brtypes.AnyToolChoice{}}
+			fmt.Printf("[DEBUG buildToolConfiguration] forceToolUse=true, 强制设置 toolChoice=any (required)\n")
 		} else {
 			cfg.ToolChoice = toolChoice
+			fmt.Printf("[DEBUG buildToolConfiguration] forceToolUse=true, 但 toolChoice 已指定: %T\n", toolChoice)
 		}
 	} else if toolChoice != nil {
 		cfg.ToolChoice = toolChoice
+		fmt.Printf("[DEBUG buildToolConfiguration] forceToolUse=false, 使用原始 toolChoice: %T\n", toolChoice)
+	} else {
+		fmt.Printf("[DEBUG buildToolConfiguration] forceToolUse=false, toolChoice=nil (auto)\n")
 	}
+
+	// 打印最终配置
+	finalToolChoice := "nil"
+	if cfg.ToolChoice != nil {
+		switch cfg.ToolChoice.(type) {
+		case *brtypes.ToolChoiceMemberAuto:
+			finalToolChoice = "auto"
+		case *brtypes.ToolChoiceMemberAny:
+			finalToolChoice = "any (required)"
+		case *brtypes.ToolChoiceMemberTool:
+			finalToolChoice = "specific tool"
+		default:
+			finalToolChoice = fmt.Sprintf("%T", cfg.ToolChoice)
+		}
+	}
+	fmt.Printf("[DEBUG buildToolConfiguration] 最终配置: tools=%d, toolChoice=%s\n", len(cfg.Tools), finalToolChoice)
 
 	return cfg, nil
 }
