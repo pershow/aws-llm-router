@@ -875,21 +875,27 @@ async function init() {
         setAdminTokenStatus("New admin token is required.", true);
         return;
       }
+
+      // Update token BEFORE making the request to avoid race condition
+      const oldToken = state.adminToken;
+
       await request(apiPath("/config/admin-token"), {
         method: "POST",
         body: JSON.stringify({
           admin_token: newToken,
         }),
       });
+
+      // Update state and storage immediately after successful response
       state.adminToken = newToken;
       localStorage.setItem("adminToken", newToken);
       el.loginToken.value = newToken;
       el.adminTokenInput.value = "";
-      setAdminTokenStatus("Admin token updated.");
+      setAdminTokenStatus("Admin token updated successfully. Using new token for future requests.");
       setStatus("Admin token updated.");
     } catch (error) {
       if (error?.status === 401 || error?.status === 403) {
-        setAdminTokenStatus("当前登录令牌无效或已过期，请重新登录后再修改。", true);
+        setAdminTokenStatus("Authentication failed. Please logout and login again with the current token.", true);
         return;
       }
       setAdminTokenStatus(error.message, true);
