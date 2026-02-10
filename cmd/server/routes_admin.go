@@ -71,6 +71,7 @@ type adminCallRow struct {
 }
 
 func registerAdminRoutes(mux *http.ServeMux, app *App) {
+	// 原始后台接口路径
 	mux.HandleFunc(adminAPIPath("/config"), app.requireAdmin(app.handleAdminConfig))
 	mux.HandleFunc(adminAPIPath("/config/aws"), app.requireAdmin(app.handleAdminAWSConfig))
 	mux.HandleFunc(adminAPIPath("/config/models"), app.requireAdmin(app.handleAdminEnabledModels))

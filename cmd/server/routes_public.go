@@ -158,9 +158,16 @@ func (a *App) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	a.logger.Printf("模型: %s, 流式: %v, 工具数量: %d", request.Model, request.Stream, len(request.Tools))
 	if len(request.Tools) > 0 {
 		toolNames := make([]string, 0, len(request.Tools))
-		for _, tool := range request.Tools {
-			if tool.Function != nil {
-				toolNames = append(toolNames, tool.Function.Name)
+		for i, tool := range request.Tools {
+			// 使用 GetFunction() 获取函数定义
+			fn := tool.GetFunction()
+			// 打印每个工具的详细信息
+			a.logger.Printf("工具 %d: type=%q, function=%v, name=%q", i, tool.Type, fn != nil, tool.Name)
+			if fn != nil {
+				toolNames = append(toolNames, fn.Name)
+				a.logger.Printf("  -> name=%q", fn.Name)
+			} else {
+				a.logger.Printf("  -> ⚠️ Function 为 nil!")
 			}
 		}
 		a.logger.Printf("工具列表: %v", toolNames)
@@ -564,19 +571,11 @@ func (a *App) handleChatCompletionsStream(
 	if err != nil {
 		statusCode = http.StatusBadGateway
 		errorMessage := "bedrock stream failed: " + err.Error()
-		_ = writeSSEData(w, openai.ChatCompletionChunk{
-			ID:      chunkID,
-			Object:  "chat.completion.chunk",
-			Created: createdAt,
-			Model:   modelName,
-			Choices: []openai.ChatChunkChoice{},
-			Error: &openai.OpenAIErrorPayload{
-				Message: errorMessage,
-				Type:    "server_error",
-				Code:    "stream_error",
-			},
-		})
-		_ = writeSSEDone(w)
+
+		// 在尚未开始向客户端写入任何 SSE 数据时，直接按 OpenAI 错误格式返回 JSON，
+		// 这样 Cursor 可以在 UI 中清晰展示错误信息，而不会出现“什么都没显示”的情况。
+		writeOpenAIError(w, statusCode, errorMessage)
+
 		return bedrockproxy.ChatResult{Text: responseText.String()}, statusCode, errorMessage
 	}
 

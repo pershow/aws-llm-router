@@ -574,16 +574,29 @@ func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, 
 
 	bedrockTools := make([]brtypes.Tool, 0, len(tools))
 	toolNames := make([]string, 0, len(tools))
-	for _, item := range tools {
+	for i, item := range tools {
+		// 使用 GetFunction() 方法获取函数定义，支持两种格式
+		function := item.GetFunction()
+		
+		// 详细调试：打印每个工具的原始信息
+		fmt.Printf("[DEBUG buildToolConfiguration] 工具 %d: type=%q, function=%v, name=%q\n", 
+			i, item.Type, function != nil, item.Name)
+		if function != nil {
+			fmt.Printf("[DEBUG buildToolConfiguration] 工具 %d function: name=%q, desc=%q\n", 
+				i, function.Name, function.Description)
+		}
+
 		toolType := strings.ToLower(strings.TrimSpace(item.Type))
 		if toolType == "" {
 			toolType = "function"
 		}
-		if toolType != "function" || item.Function == nil {
+		if toolType != "function" || function == nil {
+			fmt.Printf("[DEBUG buildToolConfiguration] 跳过工具 %d: type=%q (期望 function), function=%v\n", 
+				i, toolType, function != nil)
 			continue
 		}
 
-		functionName := strings.TrimSpace(item.Function.Name)
+		functionName := strings.TrimSpace(function.Name)
 		if functionName == "" {
 			return nil, errors.New("tool function name is required")
 		}
@@ -593,9 +606,9 @@ func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, 
 			"type":       "object",
 			"properties": map[string]any{},
 		}
-		schemaRaw := strings.TrimSpace(string(item.Function.Parameters))
+		schemaRaw := strings.TrimSpace(string(function.Parameters))
 		if schemaRaw != "" {
-			if err := json.Unmarshal(item.Function.Parameters, &schema); err != nil {
+			if err := json.Unmarshal(function.Parameters, &schema); err != nil {
 				return nil, fmt.Errorf("invalid JSON schema for tool %q: %w", functionName, err)
 			}
 		}
@@ -606,11 +619,11 @@ func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, 
 				Value: document.NewLazyDocument(schema),
 			},
 		}
-		if description := strings.TrimSpace(item.Function.Description); description != "" {
+		if description := strings.TrimSpace(function.Description); description != "" {
 			spec.Description = aws.String(description)
 		}
-		if item.Function.Strict != nil {
-			spec.Strict = item.Function.Strict
+		if function.Strict != nil {
+			spec.Strict = function.Strict
 		}
 
 		bedrockTools = append(bedrockTools, &brtypes.ToolMemberToolSpec{Value: spec})

@@ -22,7 +22,12 @@ type Config struct {
 	DBPath                string
 	LogQueueSize          int
 	MaxContentChars       int
-	ForceToolUse          bool // 当请求包含 tools 时，强制模型调用工具
+	ForceToolUse          bool   // 当请求包含 tools 时，强制模型调用工具
+	TLSProxyEnabled       bool   // 是否启用内置 TLS 反向代理
+	TLSProxyListenAddr    string // TLS 反向代理监听地址，例如 :443
+	TLSProxyCertFile      string // TLS 证书文件路径
+	TLSProxyKeyFile       string // TLS 私钥文件路径
+	TLSProxyTargetURL     string // 反向代理的目标地址，例如 http://127.0.0.1:8080
 }
 
 type ClientConfig struct {
@@ -48,9 +53,14 @@ func Load() (Config, error) {
 		DefaultMaxOutputToken: int32(getEnvInt("DEFAULT_MAX_OUTPUT_TOKENS", 0)),
 		GlobalMaxConcurrent:   getEnvInt("GLOBAL_MAX_CONCURRENT", 512),
 		DBPath:                getEnv("DB_PATH", "./data/router.db"),
-		LogQueueSize:          getEnvInt("LOG_QUEUE_SIZE", 10000),
-		MaxContentChars:       getEnvInt("MAX_CONTENT_CHARS", 20000),
-		ForceToolUse:          getEnvBool("FORCE_TOOL_USE", true), // 默认启用，强制模型调用工具
+		LogQueueSize:       getEnvInt("LOG_QUEUE_SIZE", 10000),
+		MaxContentChars:    getEnvInt("MAX_CONTENT_CHARS", 20000),
+		ForceToolUse:       getEnvBool("FORCE_TOOL_USE", true), // 默认启用，强制模型调用工具
+		TLSProxyEnabled:    getEnvBool("TLS_PROXY_ENABLED", false),
+		TLSProxyListenAddr: getEnv("TLS_PROXY_LISTEN_ADDR", ":443"),
+		TLSProxyCertFile:   strings.TrimSpace(os.Getenv("TLS_PROXY_CERT_FILE")),
+		TLSProxyKeyFile:    strings.TrimSpace(os.Getenv("TLS_PROXY_KEY_FILE")),
+		TLSProxyTargetURL:  getEnv("TLS_PROXY_TARGET_URL", "http://127.0.0.1:8080"),
 	}
 
 	if cfg.DefaultMaxOutputToken < 0 {
@@ -67,6 +77,12 @@ func Load() (Config, error) {
 	}
 	if cfg.MaxContentChars <= 0 {
 		return Config{}, errors.New("MAX_CONTENT_CHARS must be > 0")
+	}
+
+	if cfg.TLSProxyEnabled {
+		if cfg.TLSProxyCertFile == "" || cfg.TLSProxyKeyFile == "" {
+			return Config{}, errors.New("TLS proxy enabled but TLS_PROXY_CERT_FILE or TLS_PROXY_KEY_FILE is empty")
+		}
 	}
 
 	return cfg, nil

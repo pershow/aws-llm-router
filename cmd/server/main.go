@@ -7,8 +7,11 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -61,7 +64,22 @@ type adminEnabledModelsPayload struct {
 }
 
 func main() {
-	_ = godotenv.Load()
+	// 优先从可执行文件所在目录加载 .env，保证双击 exe 也能读到本地配置
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		envPath := filepath.Join(exeDir, ".env")
+		if err := godotenv.Load(envPath); err != nil {
+			log.Printf("[env] tried loading from exe dir: %s (err=%v)", envPath, err)
+		} else {
+			log.Printf("[env] loaded from exe dir: %s", envPath)
+		}
+	} else {
+		if err := godotenv.Load(); err != nil {
+			log.Printf("[env] tried loading from working dir: .env (err=%v)", err)
+		} else {
+			log.Printf("[env] loaded from working dir: .env")
+		}
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -69,6 +87,7 @@ func main() {
 	}
 
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds|log.LUTC)
+	logger.Printf("[env] effective LISTEN_ADDR env=%q cfg.ListenAddr=%q", os.Getenv("LISTEN_ADDR"), cfg.ListenAddr)
 	logger.Printf("starting aws cursor router on %s", cfg.ListenAddr)
 
 	routerStore, err := store.New(cfg.DBPath, cfg.LogQueueSize)
@@ -156,11 +175,15 @@ func main() {
 	mux := http.NewServeMux()
 	registerPublicRoutes(mux, app)
 	registerAdminRoutes(mux, app)
+	// Admin 前端静态资源：原路径 + 带 /llmrouter 前缀的路径
 	mux.Handle(adminStaticPath(), app.adminStatic)
+	mux.Handle("/llmrouter"+adminStaticPath(), app.adminStatic)
 
 	// 应用中间件：调试中间件 -> 日志中间件 -> 路由
 	handler := loggingMiddleware(logger, mux)
 	handler = debugMiddleware(logger, handler)
+
+	var tlsServer *http.Server
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -169,12 +192,35 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
+
+	if cfg.TLSProxyEnabled {
+		targetURL, err := url.Parse(cfg.TLSProxyTargetURL)
+		if err != nil {
+			logger.Fatalf("invalid TLS_PROXY_TARGET_URL %q: %v", cfg.TLSProxyTargetURL, err)
+		}
+
+		proxyHandler := httputil.NewSingleHostReverseProxy(targetURL)
+		tlsMux := http.NewServeMux()
+		tlsMux.Handle("/", proxyHandler)
+
+		tlsServer = &http.Server{
+			Addr:    cfg.TLSProxyListenAddr,
+			Handler: tlsMux,
+		}
+
+		go func() {
+			logger.Printf("starting TLS reverse proxy on %s -> %s", cfg.TLSProxyListenAddr, cfg.TLSProxyTargetURL)
+			if err := tlsServer.ListenAndServeTLS(cfg.TLSProxyCertFile, cfg.TLSProxyKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+			}
+		}()
+	}
 
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
@@ -190,6 +236,11 @@ func main() {
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Printf("server shutdown error: %v", err)
+	}
+	if tlsServer != nil {
+		if err := tlsServer.Shutdown(shutdownCtx); err != nil {
+			logger.Printf("tls server shutdown error: %v", err)
+		}
 	}
 }
 

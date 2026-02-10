@@ -93,6 +93,29 @@ type ChatChunkToolCall struct {
 type Tool struct {
 	Type     string        `json:"type"`
 	Function *ToolFunction `json:"function,omitempty"`
+	// Cursor/Responses API 格式 - 工具定义直接在顶层
+	Name        string          `json:"name,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
+}
+
+// GetFunction 返回工具的函数定义，支持两种格式
+func (t *Tool) GetFunction() *ToolFunction {
+	// 优先使用嵌套的 function 字段
+	if t.Function != nil {
+		return t.Function
+	}
+	// 如果没有嵌套的 function，检查顶层字段
+	if t.Name != "" {
+		return &ToolFunction{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  t.Parameters,
+			Strict:      t.Strict,
+		}
+	}
+	return nil
 }
 
 type ToolFunction struct {
