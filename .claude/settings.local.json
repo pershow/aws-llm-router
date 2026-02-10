@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(ls:*)",
+      "Bash(go build:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: 添加工具调用消息验证和修复功能\n\n参考 9router 实现，添加消息验证和修复逻辑以提高工具调用可靠性\n\n新增功能:\n- EnsureToolCallIDs: 确保所有 tool_calls 有有效的 ID\n- FixMissingToolResponses: 自动修复缺失的工具响应\n- 调试中间件: 通过 DEBUG_REQUESTS=true 启用详细日志\n\n修改文件:\n- internal/openai/message_fix.go \\(新增\\)\n- internal/bedrockproxy/service.go \\(修改\\)\n- cmd/server/debug_middleware.go \\(新增\\)\n- cmd/server/main.go \\(修改\\)\n\n问题修复:\n- 修复 Cursor Agent 模式下工具调用失败的问题\n- 确保消息序列符合 AWS Bedrock API 要求\n- 提高工具调用成功率\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(echo:*)",
+      "Bash(find:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}
