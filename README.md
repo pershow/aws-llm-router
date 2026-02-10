@@ -4,6 +4,23 @@ High-performance OpenAI-compatible proxy for Cursor + AWS Bedrock.
 
 AWS credentials stay on the server. Team members only use proxy API keys.
 
+## Agent Compatibility
+
+This router now supports OpenAI-compatible agent tool-calling flow used by
+modern coding agents across CLI/IDE integrations:
+
+- `tools` + `tool_choice` in request
+- assistant `tool_calls` in response (non-streaming and streaming delta)
+- `tool` role messages with `tool_call_id`
+- `developer` role (mapped to system prompt)
+- `/v1/responses` create + stream (including `message`, `function_call`,
+  `function_call_output` style inputs)
+- call logs include prompt/response content for tool-calling turns on both
+  `/v1/chat/completions` and `/v1/responses`
+
+These are the core protocol pieces used by CLI/IDE agents for MCP/skills style
+tool execution loops when they run against OpenAI-compatible endpoints.
+
 ## Quick Start
 
 1. Create local config:
@@ -105,5 +122,3 @@ In Cursor, use OpenAI-compatible custom endpoint:
 - Base URL: `http://<server>:8080/v1`
 - API Key: one key from your client list
 - Model: AWS Bedrock model ID directly (for example `anthropic.claude-3-5-sonnet-20240620-v1:0`)
-
-

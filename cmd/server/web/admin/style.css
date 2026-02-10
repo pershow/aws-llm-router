@@ -454,6 +454,7 @@ details {
   max-height: 86vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: #fffef9;
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -474,9 +475,15 @@ details {
 }
 
 .modal-body {
+  width: 100%;
+  max-width: none;
   padding: 14px 16px 18px;
   overflow: auto;
   line-height: 1.55;
+}
+
+.modal-body.log-rich {
+  max-width: none;
 }
 
 .modal-body .log-pre {

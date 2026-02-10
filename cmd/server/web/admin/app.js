@@ -228,9 +228,15 @@ function bindMenuNavigation() {
 }
 
 function authHeaders() {
+  const token = String(state.adminToken || "").trim();
   return {
-    Authorization: `Bearer ${state.adminToken}`,
     "Content-Type": "application/json",
+    ...(token
+      ? {
+          Authorization: `Bearer ${token}`,
+          "x-admin-token": token,
+        }
+      : {}),
   };
 }
 
@@ -247,7 +253,9 @@ async function request(url, options = {}) {
   const body = contentType.includes("application/json") ? await response.json() : {};
   if (!response.ok) {
     const errorMessage = body.error || body?.error?.message || `HTTP ${response.status}`;
-    throw new Error(errorMessage);
+    const error = new Error(errorMessage);
+    error.status = response.status;
+    throw error;
   }
   return body;
 }
@@ -880,6 +888,10 @@ async function init() {
       setAdminTokenStatus("Admin token updated.");
       setStatus("Admin token updated.");
     } catch (error) {
+      if (error?.status === 401 || error?.status === 403) {
+        setAdminTokenStatus("当前登录令牌无效或已过期，请重新登录后再修改。", true);
+        return;
+      }
       setAdminTokenStatus(error.message, true);
     }
   });

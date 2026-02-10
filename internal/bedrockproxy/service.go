@@ -2,6 +2,7 @@ package bedrockproxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,7 +12,9 @@ import (
 	"aws-cursor-router/internal/openai"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	smithydocument "github.com/aws/smithy-go/document"
 )
 
 type ConverseAPI interface {
@@ -28,6 +31,7 @@ type Service struct {
 
 type ChatResult struct {
 	Text         string
+	ToolCalls    []openai.ToolCall
 	InputTokens  int
 	OutputTokens int
 	TotalTokens  int
@@ -38,6 +42,7 @@ type ChatResult struct {
 type StreamDelta struct {
 	Role         string
 	Text         string
+	ToolCalls    []openai.ChatChunkToolCall
 	FinishReason string
 }
 
@@ -124,6 +129,10 @@ func (s *Service) Converse(ctx context.Context, request openai.ChatCompletionReq
 	if err != nil {
 		return ChatResult{}, err
 	}
+	toolConfig, err := buildToolConfiguration(request.Tools, request.ToolChoice)
+	if err != nil {
+		return ChatResult{}, err
+	}
 
 	s.mu.RLock()
 	client := s.client
@@ -141,13 +150,16 @@ func (s *Service) Converse(ctx context.Context, request openai.ChatCompletionReq
 		Messages:        messages,
 		System:          system,
 		InferenceConfig: inferenceConfig,
+		ToolConfig:      toolConfig,
 	})
 	if err != nil {
 		return ChatResult{}, err
 	}
 
+	payload := extractOutputPayload(output.Output)
 	result := ChatResult{
-		Text:         extractOutputText(output.Output),
+		Text:         payload.Text,
+		ToolCalls:    payload.ToolCalls,
 		FinishReason: mapStopReason(output.StopReason),
 	}
 
@@ -173,6 +185,10 @@ func (s *Service) ConverseStream(
 	if err != nil {
 		return ChatResult{}, err
 	}
+	toolConfig, err := buildToolConfiguration(request.Tools, request.ToolChoice)
+	if err != nil {
+		return ChatResult{}, err
+	}
 
 	s.mu.RLock()
 	client := s.client
@@ -190,6 +206,7 @@ func (s *Service) ConverseStream(
 		Messages:        messages,
 		System:          system,
 		InferenceConfig: inferenceConfig,
+		ToolConfig:      toolConfig,
 	})
 	if err != nil {
 		return ChatResult{}, err
@@ -200,6 +217,8 @@ func (s *Service) ConverseStream(
 	result := ChatResult{FinishReason: "stop"}
 	var textBuilder strings.Builder
 	roleSent := false
+	toolCalls := make([]openai.ToolCall, 0, 2)
+	toolCallIndexByContentBlock := make(map[int]int)
 
 	for event := range stream.Events() {
 		switch value := event.(type) {
@@ -210,8 +229,9 @@ func (s *Service) ConverseStream(
 					return ChatResult{}, err
 				}
 			}
-		case *brtypes.ConverseStreamOutputMemberContentBlockDelta:
-			textDelta, ok := value.Value.Delta.(*brtypes.ContentBlockDeltaMemberText)
+		case *brtypes.ConverseStreamOutputMemberContentBlockStart:
+			blockIndex := int(ptrInt32(value.Value.ContentBlockIndex))
+			toolStart, ok := value.Value.Start.(*brtypes.ContentBlockStartMemberToolUse)
 			if !ok {
 				continue
 			}
@@ -221,12 +241,80 @@ func (s *Service) ConverseStream(
 					return ChatResult{}, err
 				}
 			}
-			if textDelta.Value == "" {
-				continue
+
+			toolCallIndex := len(toolCalls)
+			toolCallID := strings.TrimSpace(aws.ToString(toolStart.Value.ToolUseId))
+			if toolCallID == "" {
+				toolCallID = fmt.Sprintf("toolcall_%d", toolCallIndex+1)
 			}
-			textBuilder.WriteString(textDelta.Value)
-			if err := onDelta(StreamDelta{Text: textDelta.Value}); err != nil {
+			toolName := strings.TrimSpace(aws.ToString(toolStart.Value.Name))
+			if toolName == "" {
+				toolName = "unknown_tool"
+			}
+
+			toolCalls = append(toolCalls, openai.ToolCall{
+				ID:   toolCallID,
+				Type: "function",
+				Function: openai.ToolCallFunction{
+					Name: toolName,
+				},
+			})
+			toolCallIndexByContentBlock[blockIndex] = toolCallIndex
+
+			if err := onDelta(StreamDelta{
+				ToolCalls: []openai.ChatChunkToolCall{{
+					Index: toolCallIndex,
+					ID:    toolCallID,
+					Type:  "function",
+					Function: &openai.ToolCallFunction{
+						Name: toolName,
+					},
+				}},
+			}); err != nil {
 				return ChatResult{}, err
+			}
+		case *brtypes.ConverseStreamOutputMemberContentBlockDelta:
+			blockIndex := int(ptrInt32(value.Value.ContentBlockIndex))
+			switch delta := value.Value.Delta.(type) {
+			case *brtypes.ContentBlockDeltaMemberText:
+				if !roleSent {
+					roleSent = true
+					if err := onDelta(StreamDelta{Role: "assistant"}); err != nil {
+						return ChatResult{}, err
+					}
+				}
+				if delta.Value == "" {
+					continue
+				}
+				textBuilder.WriteString(delta.Value)
+				if err := onDelta(StreamDelta{Text: delta.Value}); err != nil {
+					return ChatResult{}, err
+				}
+			case *brtypes.ContentBlockDeltaMemberToolUse:
+				toolCallIndex, exists := toolCallIndexByContentBlock[blockIndex]
+				if !exists {
+					toolCallIndex = len(toolCalls)
+					toolCalls = append(toolCalls, openai.ToolCall{
+						ID:       fmt.Sprintf("toolcall_%d", toolCallIndex+1),
+						Type:     "function",
+						Function: openai.ToolCallFunction{},
+					})
+					toolCallIndexByContentBlock[blockIndex] = toolCallIndex
+				}
+				if delta.Value.Input == nil || *delta.Value.Input == "" {
+					continue
+				}
+				toolCalls[toolCallIndex].Function.Arguments += *delta.Value.Input
+				if err := onDelta(StreamDelta{
+					ToolCalls: []openai.ChatChunkToolCall{{
+						Index: toolCallIndex,
+						Function: &openai.ToolCallFunction{
+							Arguments: *delta.Value.Input,
+						},
+					}},
+				}); err != nil {
+					return ChatResult{}, err
+				}
 			}
 		case *brtypes.ConverseStreamOutputMemberMessageStop:
 			result.FinishReason = mapStopReason(value.Value.StopReason)
@@ -247,6 +335,7 @@ func (s *Service) ConverseStream(
 	}
 
 	result.Text = textBuilder.String()
+	result.ToolCalls = toolCalls
 	return result, nil
 }
 
@@ -254,31 +343,58 @@ func BuildBedrockMessages(messages []openai.ChatMessage) ([]brtypes.Message, []b
 	outMessages := make([]brtypes.Message, 0, len(messages))
 	outSystem := make([]brtypes.SystemContentBlock, 0, 2)
 
-	for _, message := range messages {
+	for index, message := range messages {
 		role := strings.ToLower(strings.TrimSpace(message.Role))
-		text, err := openai.DecodeContentAsText(message.Content)
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid message content for role %q: %w", role, err)
-		}
-		if strings.TrimSpace(text) == "" {
-			continue
-		}
 
 		switch role {
-		case "system":
+		case "system", "developer":
+			text, err := openai.DecodeContentAsText(message.Content)
+			if err != nil {
+				return nil, nil, fmt.Errorf("invalid %s message content at index %d: %w", role, index, err)
+			}
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
 			outSystem = append(outSystem, &brtypes.SystemContentBlockMemberText{Value: text})
+
 		case "assistant":
+			blocks, err := buildAssistantContentBlocks(message)
+			if err != nil {
+				return nil, nil, fmt.Errorf("invalid assistant message at index %d: %w", index, err)
+			}
+			if len(blocks) == 0 {
+				continue
+			}
 			outMessages = append(outMessages, brtypes.Message{
 				Role:    brtypes.ConversationRoleAssistant,
-				Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: text}},
+				Content: blocks,
 			})
-		case "user", "":
+
+		case "tool":
+			toolResult, err := buildToolResultContentBlock(message)
+			if err != nil {
+				return nil, nil, fmt.Errorf("invalid tool message at index %d: %w", index, err)
+			}
+			outMessages = append(outMessages, brtypes.Message{
+				Role:    brtypes.ConversationRoleUser,
+				Content: []brtypes.ContentBlock{toolResult},
+			})
+
+		case "", "user", "function":
+			text, err := openai.DecodeContentAsText(message.Content)
+			if err != nil {
+				return nil, nil, fmt.Errorf("invalid user message content at index %d: %w", index, err)
+			}
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
 			outMessages = append(outMessages, brtypes.Message{
 				Role:    brtypes.ConversationRoleUser,
 				Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: text}},
 			})
+
 		default:
-			// Ignore unsupported roles for now to keep cursor compatibility stable.
+			// Keep compatibility by ignoring unknown roles instead of failing hard.
 		}
 	}
 
@@ -288,20 +404,310 @@ func BuildBedrockMessages(messages []openai.ChatMessage) ([]brtypes.Message, []b
 	return outMessages, outSystem, nil
 }
 
-func extractOutputText(output brtypes.ConverseOutput) string {
+func buildAssistantContentBlocks(message openai.ChatMessage) ([]brtypes.ContentBlock, error) {
+	blocks := make([]brtypes.ContentBlock, 0, 1+len(message.ToolCalls))
+
+	text, err := openai.DecodeContentAsText(message.Content)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(text) != "" {
+		blocks = append(blocks, &brtypes.ContentBlockMemberText{Value: text})
+	}
+
+	toolUseBlocks, err := buildToolUseBlocks(message.ToolCalls)
+	if err != nil {
+		return nil, err
+	}
+	blocks = append(blocks, toolUseBlocks...)
+	return blocks, nil
+}
+
+func buildToolUseBlocks(toolCalls []openai.ToolCall) ([]brtypes.ContentBlock, error) {
+	if len(toolCalls) == 0 {
+		return nil, nil
+	}
+
+	blocks := make([]brtypes.ContentBlock, 0, len(toolCalls))
+	for index, toolCall := range toolCalls {
+		toolType := strings.ToLower(strings.TrimSpace(toolCall.Type))
+		if toolType == "" {
+			toolType = "function"
+		}
+		if toolType != "function" {
+			return nil, fmt.Errorf("unsupported tool call type: %s", toolType)
+		}
+
+		toolName := strings.TrimSpace(toolCall.Function.Name)
+		if toolName == "" {
+			return nil, errors.New("tool call function.name is required")
+		}
+
+		toolCallID := strings.TrimSpace(toolCall.ID)
+		if toolCallID == "" {
+			toolCallID = fmt.Sprintf("toolcall_%d", index+1)
+		}
+
+		argsRaw := strings.TrimSpace(toolCall.Function.Arguments)
+		if argsRaw == "" {
+			argsRaw = "{}"
+		}
+		var args any
+		if err := json.Unmarshal([]byte(argsRaw), &args); err != nil {
+			return nil, fmt.Errorf("invalid JSON in tool call arguments for %q: %w", toolName, err)
+		}
+
+		blocks = append(blocks, &brtypes.ContentBlockMemberToolUse{
+			Value: brtypes.ToolUseBlock{
+				Name:      aws.String(toolName),
+				ToolUseId: aws.String(toolCallID),
+				Input:     document.NewLazyDocument(args),
+			},
+		})
+	}
+
+	return blocks, nil
+}
+
+func buildToolResultContentBlock(message openai.ChatMessage) (brtypes.ContentBlock, error) {
+	toolUseID := strings.TrimSpace(message.ToolCallID)
+	if toolUseID == "" {
+		toolUseID = strings.TrimSpace(message.Name)
+	}
+	if toolUseID == "" {
+		return nil, errors.New("tool message requires tool_call_id")
+	}
+
+	resultContent, err := parseToolResultContent(message.Content)
+	if err != nil {
+		return nil, err
+	}
+	if len(resultContent) == 0 {
+		resultContent = []brtypes.ToolResultContentBlock{
+			&brtypes.ToolResultContentBlockMemberText{Value: ""},
+		}
+	}
+
+	return &brtypes.ContentBlockMemberToolResult{
+		Value: brtypes.ToolResultBlock{
+			ToolUseId: aws.String(toolUseID),
+			Content:   resultContent,
+		},
+	}, nil
+}
+
+func parseToolResultContent(raw json.RawMessage) ([]brtypes.ToolResultContentBlock, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return []brtypes.ToolResultContentBlock{
+			&brtypes.ToolResultContentBlockMemberText{Value: trimmed},
+		}, nil
+	}
+
+	switch value := payload.(type) {
+	case string:
+		return []brtypes.ToolResultContentBlock{
+			&brtypes.ToolResultContentBlockMemberText{Value: value},
+		}, nil
+	default:
+		return []brtypes.ToolResultContentBlock{
+			&brtypes.ToolResultContentBlockMemberJson{Value: document.NewLazyDocument(payload)},
+		}, nil
+	}
+}
+
+func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage) (*brtypes.ToolConfiguration, error) {
+	bedrockTools := make([]brtypes.Tool, 0, len(tools))
+	for _, item := range tools {
+		toolType := strings.ToLower(strings.TrimSpace(item.Type))
+		if toolType == "" {
+			toolType = "function"
+		}
+		if toolType != "function" || item.Function == nil {
+			continue
+		}
+
+		functionName := strings.TrimSpace(item.Function.Name)
+		if functionName == "" {
+			return nil, errors.New("tool function name is required")
+		}
+
+		schema := map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		}
+		schemaRaw := strings.TrimSpace(string(item.Function.Parameters))
+		if schemaRaw != "" {
+			if err := json.Unmarshal(item.Function.Parameters, &schema); err != nil {
+				return nil, fmt.Errorf("invalid JSON schema for tool %q: %w", functionName, err)
+			}
+		}
+
+		spec := brtypes.ToolSpecification{
+			Name: aws.String(functionName),
+			InputSchema: &brtypes.ToolInputSchemaMemberJson{
+				Value: document.NewLazyDocument(schema),
+			},
+		}
+		if description := strings.TrimSpace(item.Function.Description); description != "" {
+			spec.Description = aws.String(description)
+		}
+		if item.Function.Strict != nil {
+			spec.Strict = item.Function.Strict
+		}
+
+		bedrockTools = append(bedrockTools, &brtypes.ToolMemberToolSpec{Value: spec})
+	}
+
+	if len(bedrockTools) == 0 {
+		return nil, nil
+	}
+
+	toolChoice, disableTools, err := parseToolChoice(rawToolChoice)
+	if err != nil {
+		return nil, err
+	}
+	if disableTools {
+		return nil, nil
+	}
+
+	cfg := &brtypes.ToolConfiguration{
+		Tools: bedrockTools,
+	}
+	if toolChoice != nil {
+		cfg.ToolChoice = toolChoice
+	}
+	return cfg, nil
+}
+
+func parseToolChoice(raw json.RawMessage) (brtypes.ToolChoice, bool, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return nil, false, nil
+	}
+
+	if strings.HasPrefix(trimmed, "\"") {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, false, fmt.Errorf("invalid tool_choice: %w", err)
+		}
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "none":
+			return nil, true, nil
+		case "auto":
+			return &brtypes.ToolChoiceMemberAuto{Value: brtypes.AutoToolChoice{}}, false, nil
+		case "required":
+			return &brtypes.ToolChoiceMemberAny{Value: brtypes.AnyToolChoice{}}, false, nil
+		default:
+			return nil, false, fmt.Errorf("unsupported tool_choice value: %s", value)
+		}
+	}
+
+	var objectChoice struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &objectChoice); err != nil {
+		return nil, false, fmt.Errorf("invalid tool_choice object: %w", err)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(objectChoice.Type)) {
+	case "none":
+		return nil, true, nil
+	case "auto":
+		return &brtypes.ToolChoiceMemberAuto{Value: brtypes.AutoToolChoice{}}, false, nil
+	case "required":
+		return &brtypes.ToolChoiceMemberAny{Value: brtypes.AnyToolChoice{}}, false, nil
+	case "function":
+		name := strings.TrimSpace(objectChoice.Function.Name)
+		if name == "" {
+			return nil, false, errors.New("tool_choice.function.name is required")
+		}
+		return &brtypes.ToolChoiceMemberTool{
+			Value: brtypes.SpecificToolChoice{
+				Name: aws.String(name),
+			},
+		}, false, nil
+	default:
+		return nil, false, fmt.Errorf("unsupported tool_choice object type: %s", objectChoice.Type)
+	}
+}
+
+type outputPayload struct {
+	Text      string
+	ToolCalls []openai.ToolCall
+}
+
+func extractOutputPayload(output brtypes.ConverseOutput) outputPayload {
 	message, ok := output.(*brtypes.ConverseOutputMemberMessage)
 	if !ok {
-		return ""
+		return outputPayload{}
 	}
 
 	var builder strings.Builder
+	toolCalls := make([]openai.ToolCall, 0, 2)
 	for _, block := range message.Value.Content {
 		switch value := block.(type) {
 		case *brtypes.ContentBlockMemberText:
 			builder.WriteString(value.Value)
+		case *brtypes.ContentBlockMemberToolUse:
+			toolCallID := strings.TrimSpace(aws.ToString(value.Value.ToolUseId))
+			if toolCallID == "" {
+				toolCallID = fmt.Sprintf("toolcall_%d", len(toolCalls)+1)
+			}
+
+			toolName := strings.TrimSpace(aws.ToString(value.Value.Name))
+			if toolName == "" {
+				toolName = "unknown_tool"
+			}
+
+			arguments := documentToJSONString(value.Value.Input)
+
+			toolCalls = append(toolCalls, openai.ToolCall{
+				ID:   toolCallID,
+				Type: "function",
+				Function: openai.ToolCallFunction{
+					Name:      toolName,
+					Arguments: arguments,
+				},
+			})
 		}
 	}
-	return builder.String()
+
+	return outputPayload{
+		Text:      builder.String(),
+		ToolCalls: toolCalls,
+	}
+}
+
+func documentToJSONString(input document.Interface) string {
+	if input == nil {
+		return "{}"
+	}
+
+	if marshaler, ok := any(input).(smithydocument.Marshaler); ok {
+		blob, err := marshaler.MarshalSmithyDocument()
+		if err == nil && len(blob) > 0 {
+			return string(blob)
+		}
+	}
+
+	var payload any
+	if err := input.UnmarshalSmithyDocument(&payload); err != nil {
+		return "{}"
+	}
+	blob, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	return string(blob)
 }
 
 func mapStopReason(reason brtypes.StopReason) string {
