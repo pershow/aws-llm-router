@@ -103,7 +103,7 @@ func TestBuildToolConfiguration(t *testing.T) {
 		},
 	}
 
-	cfg, err := buildToolConfiguration(tools, json.RawMessage(`"required"`))
+	cfg, err := buildToolConfiguration(tools, json.RawMessage(`"required"`), false)
 	if err != nil {
 		t.Fatalf("buildToolConfiguration(required) returned error: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestBuildToolConfiguration(t *testing.T) {
 		t.Fatalf("expected ToolChoiceMemberAny, got %T", cfg.ToolChoice)
 	}
 
-	cfgNone, err := buildToolConfiguration(tools, json.RawMessage(`"none"`))
+	cfgNone, err := buildToolConfiguration(tools, json.RawMessage(`"none"`), false)
 	if err != nil {
 		t.Fatalf("buildToolConfiguration(none) returned error: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestBuildToolConfiguration(t *testing.T) {
 		t.Fatalf("expected nil config when tool_choice is none")
 	}
 
-	cfgSpecific, err := buildToolConfiguration(tools, json.RawMessage(`{"type":"function","function":{"name":"search_docs"}}`))
+	cfgSpecific, err := buildToolConfiguration(tools, json.RawMessage(`{"type":"function","function":{"name":"search_docs"}}`), false)
 	if err != nil {
 		t.Fatalf("buildToolConfiguration(function choice) returned error: %v", err)
 	}
@@ -134,6 +134,18 @@ func TestBuildToolConfiguration(t *testing.T) {
 	}
 	if _, ok := cfgSpecific.ToolChoice.(*brtypes.ToolChoiceMemberTool); !ok {
 		t.Fatalf("expected ToolChoiceMemberTool, got %T", cfgSpecific.ToolChoice)
+	}
+
+	// Test forceToolUse with auto choice
+	cfgForced, err := buildToolConfiguration(tools, json.RawMessage(`"auto"`), true)
+	if err != nil {
+		t.Fatalf("buildToolConfiguration(auto, forceToolUse=true) returned error: %v", err)
+	}
+	if cfgForced == nil {
+		t.Fatalf("expected non-nil config for forced tool use")
+	}
+	if _, ok := cfgForced.ToolChoice.(*brtypes.ToolChoiceMemberAny); !ok {
+		t.Fatalf("expected ToolChoiceMemberAny when forceToolUse=true, got %T", cfgForced.ToolChoice)
 	}
 }
 

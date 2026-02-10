@@ -104,11 +104,16 @@ func main() {
 		log.Fatalf("failed to initialize auth clients: %v", err)
 	}
 
+	// 打印关键配置
+	logger.Printf("配置: ForceToolUse=%v, DefaultModelID=%s, DefaultMaxOutputToken=%d",
+		cfg.ForceToolUse, cfg.DefaultModelID, cfg.DefaultMaxOutputToken)
+
 	proxy := bedrockproxy.NewService(
 		nil,
 		cfg.DefaultModelID,
 		nil,
 		cfg.DefaultMaxOutputToken,
+		cfg.ForceToolUse,
 	)
 
 	adminSubFS, err := fs.Sub(adminUIFiles, "web/admin")

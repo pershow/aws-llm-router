@@ -22,6 +22,7 @@ type Config struct {
 	DBPath                string
 	LogQueueSize          int
 	MaxContentChars       int
+	ForceToolUse          bool // 当请求包含 tools 时，强制模型调用工具
 }
 
 type ClientConfig struct {
@@ -49,6 +50,7 @@ func Load() (Config, error) {
 		DBPath:                getEnv("DB_PATH", "./data/router.db"),
 		LogQueueSize:          getEnvInt("LOG_QUEUE_SIZE", 10000),
 		MaxContentChars:       getEnvInt("MAX_CONTENT_CHARS", 20000),
+		ForceToolUse:          getEnvBool("FORCE_TOOL_USE", true), // 默认启用，强制模型调用工具
 	}
 
 	if cfg.DefaultMaxOutputToken < 0 {
@@ -88,4 +90,12 @@ func getEnvInt(name string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+func getEnvBool(name string, fallback bool) bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	if raw == "" {
+		return fallback
+	}
+	return raw == "true" || raw == "1" || raw == "yes"
 }

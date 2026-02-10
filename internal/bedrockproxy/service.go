@@ -27,6 +27,7 @@ type Service struct {
 	mu                    sync.RWMutex
 	defaultModelID        string
 	defaultMaxOutputToken int32
+	forceToolUse          bool // 当请求包含 tools 时，强制模型调用工具
 }
 
 type ChatResult struct {
@@ -51,6 +52,7 @@ func NewService(
 	defaultModelID string,
 	modelRouter map[string]string,
 	defaultMaxOutputToken int32,
+	forceToolUse bool,
 ) *Service {
 	_ = modelRouter
 
@@ -58,6 +60,7 @@ func NewService(
 		client:                client,
 		defaultModelID:        strings.TrimSpace(defaultModelID),
 		defaultMaxOutputToken: defaultMaxOutputToken,
+		forceToolUse:          forceToolUse,
 	}
 }
 
@@ -133,7 +136,12 @@ func (s *Service) Converse(ctx context.Context, request openai.ChatCompletionReq
 	if err != nil {
 		return ChatResult{}, err
 	}
-	toolConfig, err := buildToolConfiguration(request.Tools, request.ToolChoice)
+
+	s.mu.RLock()
+	forceToolUse := s.forceToolUse
+	s.mu.RUnlock()
+
+	toolConfig, err := buildToolConfiguration(request.Tools, request.ToolChoice, forceToolUse)
 	if err != nil {
 		return ChatResult{}, err
 	}
@@ -193,7 +201,12 @@ func (s *Service) ConverseStream(
 	if err != nil {
 		return ChatResult{}, err
 	}
-	toolConfig, err := buildToolConfiguration(request.Tools, request.ToolChoice)
+
+	s.mu.RLock()
+	forceToolUse := s.forceToolUse
+	s.mu.RUnlock()
+
+	toolConfig, err := buildToolConfiguration(request.Tools, request.ToolChoice, forceToolUse)
 	if err != nil {
 		return ChatResult{}, err
 	}
@@ -529,7 +542,7 @@ func parseToolResultContent(raw json.RawMessage) ([]brtypes.ToolResultContentBlo
 	}
 }
 
-func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage) (*brtypes.ToolConfiguration, error) {
+func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, forceToolUse bool) (*brtypes.ToolConfiguration, error) {
 	bedrockTools := make([]brtypes.Tool, 0, len(tools))
 	for _, item := range tools {
 		toolType := strings.ToLower(strings.TrimSpace(item.Type))
@@ -587,9 +600,21 @@ func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage) 
 	cfg := &brtypes.ToolConfiguration{
 		Tools: bedrockTools,
 	}
-	if toolChoice != nil {
+
+	// 如果启用了强制工具调用，且 toolChoice 是 auto 或 nil，则强制设置为 any (required)
+	if forceToolUse {
+		// 检查是否是 auto 或未设置
+		_, isAuto := toolChoice.(*brtypes.ToolChoiceMemberAuto)
+		if toolChoice == nil || isAuto {
+			// 强制使用 any (required)，模型必须调用工具
+			cfg.ToolChoice = &brtypes.ToolChoiceMemberAny{Value: brtypes.AnyToolChoice{}}
+		} else {
+			cfg.ToolChoice = toolChoice
+		}
+	} else if toolChoice != nil {
 		cfg.ToolChoice = toolChoice
 	}
+
 	return cfg, nil
 }
 
