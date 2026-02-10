@@ -680,6 +680,7 @@ func (a *App) handleResponsesStream(
 
 	messageItemID := "msg_" + requestID
 	messageOutputIndex := -1
+	messageContentPartAdded := false // 跟踪是否已发送 content_part.added
 	nextOutputIndex := 0
 	var responseText strings.Builder
 	toolStates := make(map[int]*openai.ResponsesFunctionCallState)
@@ -696,6 +697,7 @@ func (a *App) handleResponsesStream(
 					Role:   "assistant",
 					Content: []openai.ResponsesOutputContent{{
 						Type:        "output_text",
+						Text:        "",
 						Annotations: []any{},
 					}},
 				}
@@ -704,6 +706,25 @@ func (a *App) handleResponsesStream(
 					"response_id":  responseID,
 					"output_index": messageOutputIndex,
 					"item":         item,
+				}); err != nil {
+					return err
+				}
+			}
+
+			// 根据 Open Responses 规范，在第一个文本 delta 之前发送 content_part.added
+			if !messageContentPartAdded {
+				messageContentPartAdded = true
+				if err := emitEvent(map[string]any{
+					"type":          "response.content_part.added",
+					"response_id":   responseID,
+					"item_id":       messageItemID,
+					"output_index":  messageOutputIndex,
+					"content_index": 0,
+					"part": map[string]any{
+						"type":        "output_text",
+						"text":        "",
+						"annotations": []any{},
+					},
 				}); err != nil {
 					return err
 				}
@@ -800,6 +821,91 @@ func (a *App) handleResponsesStream(
 	result.Text = responseText.String()
 	outputItems := openai.BuildResponsesOutputItems(requestID, result.Text, result.ToolCalls)
 	outputText := openai.BuildResponsesOutputText(outputItems)
+
+	// 发送 output_item.done 事件 - 这是 Cursor 需要的关键事件
+	// 1. 先发送消息项的完成事件
+	if messageOutputIndex >= 0 {
+		// 根据 Open Responses 规范，先发送 output_text.done
+		if err := emitEvent(map[string]any{
+			"type":          "response.output_text.done",
+			"response_id":   responseID,
+			"output_index":  messageOutputIndex,
+			"item_id":       messageItemID,
+			"content_index": 0,
+			"text":          result.Text,
+		}); err != nil {
+			statusCode = http.StatusBadGateway
+			return result, statusCode, err.Error()
+		}
+		// 然后发送 content_part.done
+		if err := emitEvent(map[string]any{
+			"type":          "response.content_part.done",
+			"response_id":   responseID,
+			"item_id":       messageItemID,
+			"output_index":  messageOutputIndex,
+			"content_index": 0,
+			"part": map[string]any{
+				"type":        "output_text",
+				"text":        result.Text,
+				"annotations": []any{},
+			},
+		}); err != nil {
+			statusCode = http.StatusBadGateway
+			return result, statusCode, err.Error()
+		}
+		// 最后发送 output_item.done
+		if err := emitEvent(map[string]any{
+			"type":         "response.output_item.done",
+			"response_id":  responseID,
+			"output_index": messageOutputIndex,
+			"item": openai.ResponsesOutputItem{
+				ID:     messageItemID,
+				Type:   "message",
+				Status: "completed",
+				Role:   "assistant",
+				Content: []openai.ResponsesOutputContent{{
+					Type:        "output_text",
+					Text:        result.Text,
+					Annotations: []any{},
+				}},
+			},
+		}); err != nil {
+			statusCode = http.StatusBadGateway
+			return result, statusCode, err.Error()
+		}
+	}
+
+	// 2. 发送工具调用项的完成事件
+	for _, state := range toolStates {
+		if err := emitEvent(map[string]any{
+			"type":         "response.function_call_arguments.done",
+			"response_id":  responseID,
+			"output_index": state.OutputIndex,
+			"item_id":      state.ItemID,
+			"call_id":      state.CallID,
+			"arguments":    state.Arguments,
+		}); err != nil {
+			statusCode = http.StatusBadGateway
+			return result, statusCode, err.Error()
+		}
+		if err := emitEvent(map[string]any{
+			"type":         "response.output_item.done",
+			"response_id":  responseID,
+			"output_index": state.OutputIndex,
+			"item": openai.ResponsesOutputItem{
+				ID:        state.ItemID,
+				Type:      "function_call",
+				Status:    "completed",
+				CallID:    state.CallID,
+				Name:      state.Name,
+				Arguments: state.Arguments,
+			},
+		}); err != nil {
+			statusCode = http.StatusBadGateway
+			return result, statusCode, err.Error()
+		}
+	}
+
 	completedResponse := openai.ResponsesCreateResponse{
 		ID:        responseID,
 		Object:    "response",
@@ -826,6 +932,17 @@ func (a *App) handleResponsesStream(
 		errorMessage := err.Error()
 		return result, statusCode, errorMessage
 	}
+	
+	// 发送 response.done 事件 - 标记整个响应完成
+	if err := emitEvent(map[string]any{
+		"type":     "response.done",
+		"response": completedResponse,
+	}); err != nil {
+		statusCode = http.StatusBadGateway
+		errorMessage := err.Error()
+		return result, statusCode, errorMessage
+	}
+	
 	if err := writeSSEDone(w); err != nil {
 		statusCode = http.StatusBadGateway
 		errorMessage := "stream completion failed: " + err.Error()

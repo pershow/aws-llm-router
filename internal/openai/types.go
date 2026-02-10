@@ -18,6 +18,17 @@ type ChatCompletionRequest struct {
 	Tools             []Tool          `json:"tools,omitempty"`
 	ToolChoice        json.RawMessage `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+	// Cursor 可能发送的额外字段 - 需要兼容（忽略不报错）
+	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
+	Stop             json.RawMessage `json:"stop,omitempty"`
+	N                *int            `json:"n,omitempty"`
+	LogitBias        json.RawMessage `json:"logit_bias,omitempty"`
+	Logprobs         *bool           `json:"logprobs,omitempty"`
+	TopLogprobs      *int            `json:"top_logprobs,omitempty"`
+	Seed             *int            `json:"seed,omitempty"`
+	ResponseFormat   json.RawMessage `json:"response_format,omitempty"`
+	StreamOptions    json.RawMessage `json:"stream_options,omitempty"`
 }
 
 type ChatMessage struct {

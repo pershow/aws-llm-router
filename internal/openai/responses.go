@@ -20,6 +20,12 @@ type ResponsesCreateRequest struct {
 	Stream            bool            `json:"stream,omitempty"`
 	User              string          `json:"user,omitempty"`
 	Instructions      string          `json:"instructions,omitempty"`
+	// Cursor 可能发送的额外字段 - 需要兼容（忽略不报错）
+	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	Reasoning          json.RawMessage `json:"reasoning,omitempty"`
+	Truncation         json.RawMessage `json:"truncation,omitempty"`
+	Store              *bool           `json:"store,omitempty"`
+	Metadata           json.RawMessage `json:"metadata,omitempty"`
 }
 
 type ResponsesTool struct {
