@@ -20,6 +20,47 @@ func registerPublicRoutes(mux *http.ServeMux, app *App) {
 	mux.HandleFunc("/v1/models", app.handleListModels)
 	mux.HandleFunc("/v1/chat/completions", app.handleChatCompletions)
 	mux.HandleFunc("/v1/responses", app.handleResponsesCreate)
+	mux.HandleFunc("/debug/test-tool-call", app.handleTestToolCall)
+}
+
+// handleTestToolCall 是一个测试端点，用于验证工具调用功能
+// 发送一个简单的请求，强制模型调用工具
+func (a *App) handleTestToolCall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// 返回测试信息
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":        "工具调用测试端点",
+		"force_tool_use": a.cfg.ForceToolUse,
+		"instructions": []string{
+			"使用 curl 测试工具调用:",
+			"curl -X POST http://your-server:8080/v1/chat/completions \\",
+			"  -H 'Content-Type: application/json' \\",
+			"  -H 'Authorization: Bearer YOUR_API_KEY' \\",
+			"  -d '{",
+			"    \"model\": \"us.anthropic.claude-3-5-sonnet-20241022-v2:0\",",
+			"    \"messages\": [{\"role\": \"user\", \"content\": \"列出当前目录的文件\"}],",
+			"    \"tools\": [{",
+			"      \"type\": \"function\",",
+			"      \"function\": {",
+			"        \"name\": \"exec\",",
+			"        \"description\": \"执行 shell 命令\",",
+			"        \"parameters\": {",
+			"          \"type\": \"object\",",
+			"          \"properties\": {",
+			"            \"command\": {\"type\": \"string\", \"description\": \"要执行的命令\"}",
+			"          },",
+			"          \"required\": [\"command\"]",
+			"        }",
+			"      }",
+			"    }],",
+			"    \"tool_choice\": \"required\"",
+			"  }'",
+		},
+	})
 }
 
 func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
