@@ -133,7 +133,7 @@ func (a *App) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ClientID:       client.ID,
 		Model:          logModel,
 		BedrockModelID: bedrockModelID,
-		RequestContent: openai.RenderMessagesForLog(request.Messages, a.cfg.MaxContentChars),
+		RequestContent: openai.RenderRequestForLog(request, a.cfg.MaxContentChars),
 		IsStream:       request.Stream,
 		CreatedAt:      startedAt,
 	}
@@ -319,7 +319,7 @@ func (a *App) handleResponsesCreate(w http.ResponseWriter, r *http.Request) {
 		ClientID:       client.ID,
 		Model:          logModel,
 		BedrockModelID: bedrockModelID,
-		RequestContent: openai.RenderMessagesForLog(chatRequest.Messages, a.cfg.MaxContentChars),
+		RequestContent: openai.RenderRequestForLog(chatRequest, a.cfg.MaxContentChars),
 		IsStream:       chatRequest.Stream,
 		CreatedAt:      startedAt,
 	}

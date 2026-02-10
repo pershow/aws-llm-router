@@ -228,3 +228,50 @@ func RenderMessagesForLog(messages []ChatMessage, maxChars int) string {
 	}
 	return output[:maxChars]
 }
+
+// RenderRequestForLog 渲染完整的请求信息，包括 messages、tools 和 tool_choice
+func RenderRequestForLog(request ChatCompletionRequest, maxChars int) string {
+	if maxChars <= 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+
+	// 1. 渲染 tools 信息
+	if len(request.Tools) > 0 {
+		builder.WriteString(fmt.Sprintf("[Tools: %d 个]\n", len(request.Tools)))
+		for i, tool := range request.Tools {
+			if tool.Function != nil {
+				builder.WriteString(fmt.Sprintf("  %d. %s", i+1, tool.Function.Name))
+				if tool.Function.Description != "" {
+					desc := tool.Function.Description
+					if len(desc) > 50 {
+						desc = desc[:50] + "..."
+					}
+					builder.WriteString(fmt.Sprintf(" - %s", desc))
+				}
+				builder.WriteString("\n")
+			}
+			if builder.Len() >= maxChars/3 {
+				builder.WriteString(fmt.Sprintf("  ... 还有 %d 个工具\n", len(request.Tools)-i-1))
+				break
+			}
+		}
+	}
+
+	// 2. 渲染 tool_choice
+	if len(request.ToolChoice) > 0 {
+		builder.WriteString(fmt.Sprintf("[tool_choice: %s]\n", string(request.ToolChoice)))
+	}
+
+	// 3. 渲染 messages
+	builder.WriteString("\n[Messages]\n")
+	messagesContent := RenderMessagesForLog(request.Messages, maxChars-builder.Len())
+	builder.WriteString(messagesContent)
+
+	output := builder.String()
+	if len(output) <= maxChars {
+		return output
+	}
+	return output[:maxChars]
+}
