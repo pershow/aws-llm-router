@@ -19,6 +19,7 @@ type adminClientResponse struct {
 	MaxRequestsPerMinute int      `json:"max_requests_per_minute"`
 	MaxConcurrent        int      `json:"max_concurrent"`
 	AllowedModels        []string `json:"allowed_models"`
+	Disabled             bool     `json:"disabled"`
 }
 
 type adminConfigResponse struct {
@@ -335,6 +336,7 @@ func (a *App) handleAdminUpsertClient(w http.ResponseWriter, r *http.Request) {
 		MaxRequestsPerMinute: payload.MaxRequestsPerMinute,
 		MaxConcurrent:        payload.MaxConcurrent,
 		AllowedModels:        normalizeModelIDs(payload.AllowedModels),
+		Disabled:             payload.Disabled,
 	}
 	if err := a.store.UpsertClient(r.Context(), clientCfg); err != nil {
 		writeAdminError(w, http.StatusBadRequest, err.Error())
@@ -528,6 +530,7 @@ func (a *App) buildAdminConfigResponse(ctx context.Context) (adminConfigResponse
 			MaxRequestsPerMinute: client.MaxRequestsPerMinute,
 			MaxConcurrent:        client.MaxConcurrent,
 			AllowedModels:        normalizeModelIDs(client.AllowedModels),
+			Disabled:             client.Disabled,
 		})
 	}
 

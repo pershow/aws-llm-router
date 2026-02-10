@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"aws-cursor-router/internal/config"
@@ -44,5 +46,41 @@ func TestManagerUpsertAndDeleteClient(t *testing.T) {
 	clients = manager.ListClients()
 	if len(clients) != 1 || clients[0].ID != "team-b" {
 		t.Fatalf("unexpected clients after delete: %+v", clients)
+	}
+}
+
+func TestManagerAuthenticateDisabledClient(t *testing.T) {
+	manager := NewManager(config.Config{GlobalMaxConcurrent: 16})
+	if err := manager.ReplaceClients([]config.ClientConfig{
+		{
+			ID:       "team-disabled",
+			Name:     "Disabled Team",
+			APIKey:   "key-disabled",
+			Disabled: true,
+		},
+	}); err != nil {
+		t.Fatalf("replace clients failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer key-disabled")
+
+	if _, err := manager.Authenticate(req); err == nil || err.Error() != "api key is disabled" {
+		t.Fatalf("expected disabled api key error, got: %v", err)
+	}
+
+	if err := manager.UpsertClient(config.ClientConfig{
+		ID:                   "team-disabled",
+		Name:                 "Disabled Team",
+		APIKey:               "key-disabled",
+		MaxRequestsPerMinute: 120,
+		MaxConcurrent:        12,
+		Disabled:             false,
+	}); err != nil {
+		t.Fatalf("upsert enabled client failed: %v", err)
+	}
+
+	if _, err := manager.Authenticate(req); err != nil {
+		t.Fatalf("expected authenticate success after re-enable, got: %v", err)
 	}
 }

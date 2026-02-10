@@ -142,6 +142,10 @@
           <input id="clientRPM" type="number" min="1" placeholder="max rpm (1200)" />
           <input id="clientConcurrent" type="number" min="1" placeholder="max concurrent (64)" />
           <input id="clientModels" placeholder="allowed model IDs, comma separated" />
+          <label class="checkbox-row">
+            <input id="clientDisabled" type="checkbox" />
+            Disable this API key
+          </label>
           <button type="submit">Save Client</button>
         </form>
         <div class="table-wrap">
@@ -153,6 +157,7 @@
                 <th>API Key</th>
                 <th>Limits</th>
                 <th>Allowed Models</th>
+                <th>Status</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -241,6 +246,16 @@
         </div>
       </div>
     </main>
+
+    <div id="contentModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="contentModalTitle">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 id="contentModalTitle">Content</h3>
+          <button id="btnCloseContentModal" class="ghost" type="button">Close</button>
+        </div>
+        <div id="contentModalBody" class="modal-body log-rich"></div>
+      </div>
+    </div>
 
     <script src="./app.js"></script>
   </body>

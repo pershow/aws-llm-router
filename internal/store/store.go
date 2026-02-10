@@ -473,7 +473,7 @@ VALUES (?, ?, ?, ?)
 
 func (s *Store) ListClients(ctx context.Context) ([]config.ClientConfig, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, name, api_key, max_requests_per_minute, max_concurrent, allowed_models_json
+SELECT id, name, api_key, max_requests_per_minute, max_concurrent, allowed_models_json, is_disabled
 FROM admin_clients
 ORDER BY id ASC
 `)
@@ -487,6 +487,7 @@ ORDER BY id ASC
 		var (
 			client            config.ClientConfig
 			allowedModelsJSON string
+			disabledFlag      int
 		)
 		if err := rows.Scan(
 			&client.ID,
@@ -495,9 +496,11 @@ ORDER BY id ASC
 			&client.MaxRequestsPerMinute,
 			&client.MaxConcurrent,
 			&allowedModelsJSON,
+			&disabledFlag,
 		); err != nil {
 			return nil, err
 		}
+		client.Disabled = disabledFlag == 1
 		if strings.TrimSpace(allowedModelsJSON) != "" {
 			_ = json.Unmarshal([]byte(allowedModelsJSON), &client.AllowedModels)
 		}
@@ -527,8 +530,8 @@ func (s *Store) UpsertClient(ctx context.Context, client config.ClientConfig) er
 
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO admin_clients(
-id, name, api_key, max_requests_per_minute, max_concurrent, allowed_models_json, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+id, name, api_key, max_requests_per_minute, max_concurrent, allowed_models_json, is_disabled, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id)
 DO UPDATE SET
 name = excluded.name,
@@ -536,6 +539,7 @@ api_key = excluded.api_key,
 max_requests_per_minute = excluded.max_requests_per_minute,
 max_concurrent = excluded.max_concurrent,
 allowed_models_json = excluded.allowed_models_json,
+is_disabled = excluded.is_disabled,
 updated_at = excluded.updated_at
 `,
 		client.ID,
@@ -544,6 +548,7 @@ updated_at = excluded.updated_at
 		client.MaxRequestsPerMinute,
 		client.MaxConcurrent,
 		allowedModelsJSON,
+		boolToInt(client.Disabled),
 		time.Now().UTC().Format(time.RFC3339Nano),
 	)
 	return err
@@ -958,6 +963,7 @@ api_key TEXT NOT NULL UNIQUE,
 max_requests_per_minute INTEGER NOT NULL,
 max_concurrent INTEGER NOT NULL,
 allowed_models_json TEXT NOT NULL DEFAULT '[]',
+is_disabled INTEGER NOT NULL DEFAULT 0,
 updated_at TEXT NOT NULL
 )`,
 		`CREATE TABLE IF NOT EXISTS admin_model_mappings (
@@ -1001,9 +1007,27 @@ updated_at TEXT NOT NULL
 			return fmt.Errorf("ensure schema failed: %w", err)
 		}
 	}
+	if err := s.migrateAdminClientColumns(ctx); err != nil {
+		return err
+	}
 	if err := s.migrateModelPricingColumns(ctx); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (s *Store) migrateAdminClientColumns(ctx context.Context) error {
+	columns, err := s.tableColumns(ctx, "admin_clients")
+	if err != nil {
+		return err
+	}
+
+	if _, ok := columns["is_disabled"]; !ok {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE admin_clients ADD COLUMN is_disabled INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migrate admin clients disabled column: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1157,6 +1181,13 @@ func uniqueNonEmpty(items []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func normalizeModelPricing(items []ModelPricingRow) ([]ModelPricingRow, error) {

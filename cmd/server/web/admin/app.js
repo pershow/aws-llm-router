@@ -54,6 +54,7 @@ const el = {
   clientRPM: document.getElementById("clientRPM"),
   clientConcurrent: document.getElementById("clientConcurrent"),
   clientModels: document.getElementById("clientModels"),
+  clientDisabled: document.getElementById("clientDisabled"),
   clientTableBody: document.getElementById("clientTableBody"),
 
   usageFrom: document.getElementById("usageFrom"),
@@ -74,6 +75,10 @@ const el = {
   btnUsage: document.getElementById("btnUsage"),
   btnCalls: document.getElementById("btnCalls"),
   menuList: document.getElementById("menuList"),
+  contentModal: document.getElementById("contentModal"),
+  contentModalTitle: document.getElementById("contentModalTitle"),
+  contentModalBody: document.getElementById("contentModalBody"),
+  btnCloseContentModal: document.getElementById("btnCloseContentModal"),
 };
 
 const API_BASE = "/backendSalsSavvyLLMRouter";
@@ -460,6 +465,7 @@ function renderClients(clients) {
   el.clientTableBody.innerHTML = "";
   for (const client of clients || []) {
     const allowedModels = (client.allowed_models || []).join(", ");
+    const isDisabled = Boolean(client.disabled);
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><code>${escapeHTML(client.id)}</code></td>
@@ -467,9 +473,38 @@ function renderClients(clients) {
       <td><code>${escapeHTML(client.api_key)}</code></td>
       <td>rpm=${formatNumber(client.max_requests_per_minute)} / conc=${formatNumber(client.max_concurrent)}</td>
       <td>${escapeHTML(allowedModels || "*")}</td>
-      <td><button class="danger" data-id="${escapeAttr(client.id)}">Delete</button></td>
+      <td><span class="client-status ${isDisabled ? "disabled" : ""}">${isDisabled ? "Disabled" : "Enabled"}</span></td>
+      <td>
+        <div class="client-actions">
+          <button class="ghost client-action-btn" type="button" data-action="toggle" data-id="${escapeAttr(client.id)}">${
+            isDisabled ? "Enable" : "Disable"
+          }</button>
+          <button class="danger client-action-btn" type="button" data-action="delete" data-id="${escapeAttr(client.id)}">Delete</button>
+        </div>
+      </td>
     `;
-    tr.querySelector("button").addEventListener("click", async () => {
+    tr.querySelector("button[data-action='toggle']").addEventListener("click", async () => {
+      const nextDisabled = !isDisabled;
+      try {
+        await request(apiPath("/config/clients"), {
+          method: "POST",
+          body: JSON.stringify({
+            id: client.id,
+            name: client.name,
+            api_key: client.api_key,
+            max_requests_per_minute: Number(client.max_requests_per_minute || 0),
+            max_concurrent: Number(client.max_concurrent || 0),
+            allowed_models: Array.isArray(client.allowed_models) ? client.allowed_models : [],
+            disabled: nextDisabled,
+          }),
+        });
+        await loadConfig();
+        setStatus(`Client ${client.id} ${nextDisabled ? "disabled" : "enabled"}.`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    });
+    tr.querySelector("button[data-action='delete']").addEventListener("click", async () => {
       if (!confirm(`Delete client ${client.id}?`)) return;
       try {
         await request(apiPath(`/config/clients?id=${encodeURIComponent(client.id)}`), { method: "DELETE" });
@@ -516,13 +551,55 @@ function renderUsage(byClient, byClientModel, totalCost) {
   setStatus(`Usage loaded. Total cost: $${formatUSD(totalCost)}`);
 }
 
-function renderContentDetails(content) {
+function closeContentModal() {
+  if (!el.contentModal) {
+    return;
+  }
+  el.contentModal.classList.add("hidden");
+  if (el.contentModalTitle) {
+    el.contentModalTitle.textContent = "Content";
+  }
+  if (el.contentModalBody) {
+    el.contentModalBody.innerHTML = "";
+  }
+}
+
+function openContentModal(title, content) {
+  if (!el.contentModal || !el.contentModalTitle || !el.contentModalBody) {
+    return;
+  }
+  el.contentModalTitle.textContent = String(title || "Content");
+  el.contentModalBody.innerHTML = formatRichText(content);
+  el.contentModal.classList.remove("hidden");
+}
+
+function createContentCell(title, content) {
+  const td = document.createElement("td");
   const text = String(content || "");
   if (!text) {
-    return "<span class=\"muted\">-</span>";
+    td.innerHTML = "<span class=\"muted\">-</span>";
+    return td;
   }
-  const summary = text.length > 48 ? `${text.slice(0, 48)}...` : text;
-  return `<details><summary>${escapeHTML(summary)}</summary><div class=\"log-rich\">${formatRichText(text)}</div></details>`;
+
+  const container = document.createElement("div");
+  container.className = "content-cell";
+
+  const summary = document.createElement("span");
+  summary.className = "content-summary";
+  summary.textContent = text.length > 80 ? `${text.slice(0, 80)}...` : text;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost content-view-btn";
+  button.textContent = "查看";
+  button.addEventListener("click", () => {
+    openContentModal(title, text);
+  });
+
+  container.appendChild(summary);
+  container.appendChild(button);
+  td.appendChild(container);
+  return td;
 }
 
 function formatRichText(rawText) {
@@ -618,9 +695,9 @@ function renderCalls(items, totalCost, pagination) {
       <td>${formatUSD(item.cost_amount)}</td>
       <td>${escapeHTML(String(item.status_code))}</td>
       <td>${escapeHTML(item.error_message || "")}</td>
-      <td>${renderContentDetails(item.request_content)}</td>
-      <td>${renderContentDetails(item.response_content)}</td>
     `;
+    tr.appendChild(createContentCell("Prompt", item.request_content));
+    tr.appendChild(createContentCell("Response", item.response_content));
     el.callsBody.appendChild(tr);
   }
 
@@ -732,6 +809,7 @@ async function connect() {
 }
 
 function logout() {
+  closeContentModal();
   state.adminToken = "";
   localStorage.removeItem("adminToken");
   el.loginToken.value = "";
@@ -923,6 +1001,7 @@ async function init() {
           max_requests_per_minute: Number(el.clientRPM.value || 0),
           max_concurrent: Number(el.clientConcurrent.value || 0),
           allowed_models: parseAllowedModels(el.clientModels.value),
+          disabled: Boolean(el.clientDisabled?.checked),
         }),
       });
       el.clientForm.reset();
@@ -974,6 +1053,26 @@ async function init() {
       await loadCalls();
     } catch (error) {
       setStatus(error.message, true);
+    }
+  });
+
+  if (el.btnCloseContentModal) {
+    el.btnCloseContentModal.addEventListener("click", () => {
+      closeContentModal();
+    });
+  }
+
+  if (el.contentModal) {
+    el.contentModal.addEventListener("click", (event) => {
+      if (event.target === el.contentModal) {
+        closeContentModal();
+      }
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && el.contentModal && !el.contentModal.classList.contains("hidden")) {
+      closeContentModal();
     }
   });
 

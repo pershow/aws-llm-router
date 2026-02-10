@@ -31,6 +31,7 @@ type ClientConfig struct {
 	MaxRequestsPerMinute int
 	MaxConcurrent        int
 	AllowedModels        []string
+	Disabled             bool
 }
 
 func Load() (Config, error) {

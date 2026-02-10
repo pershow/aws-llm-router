@@ -29,6 +29,42 @@ func TestStoreConfigAndUsage(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert client failed: %v", err)
 	}
+	clients, err := s.ListClients(ctx)
+	if err != nil {
+		t.Fatalf("list clients failed: %v", err)
+	}
+	if len(clients) != 1 || clients[0].Disabled {
+		t.Fatalf("unexpected client disabled state after initial upsert: %+v", clients)
+	}
+	if err := s.UpsertClient(ctx, config.ClientConfig{
+		ID:                   "team-a",
+		Name:                 "Team A",
+		APIKey:               "key-a",
+		MaxRequestsPerMinute: 100,
+		MaxConcurrent:        10,
+		AllowedModels:        []string{"gpt-4o"},
+		Disabled:             true,
+	}); err != nil {
+		t.Fatalf("upsert client with disabled=true failed: %v", err)
+	}
+	clients, err = s.ListClients(ctx)
+	if err != nil {
+		t.Fatalf("list clients after disable failed: %v", err)
+	}
+	if len(clients) != 1 || !clients[0].Disabled {
+		t.Fatalf("unexpected client disabled state after disable: %+v", clients)
+	}
+	if err := s.UpsertClient(ctx, config.ClientConfig{
+		ID:                   "team-a",
+		Name:                 "Team A",
+		APIKey:               "key-a",
+		MaxRequestsPerMinute: 100,
+		MaxConcurrent:        10,
+		AllowedModels:        []string{"gpt-4o"},
+		Disabled:             false,
+	}); err != nil {
+		t.Fatalf("upsert client with disabled=false failed: %v", err)
+	}
 	if err := s.UpsertModelMapping(ctx, "gpt-4o", "anthropic.model"); err != nil {
 		t.Fatalf("upsert model mapping failed: %v", err)
 	}

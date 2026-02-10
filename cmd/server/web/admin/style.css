@@ -241,6 +241,24 @@ h3 {
   gap: 8px;
 }
 
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  padding: 2px 0;
+}
+
+.checkbox-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  border-radius: 4px;
+  accent-color: var(--brand);
+}
+
 .price-input {
   min-width: 140px;
 }
@@ -333,6 +351,55 @@ details {
   max-width: 320px;
 }
 
+.content-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 320px;
+}
+
+.content-summary {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.content-view-btn {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.client-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.client-action-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.client-status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  border: 1px solid #9fc7bc;
+  background: #e8f7f2;
+  color: #0d6f54;
+}
+
+.client-status.disabled {
+  border-color: #e2b0ab;
+  background: #fceceb;
+  color: #a53129;
+}
+
 .log-pre {
   margin: 6px 0 0;
   max-height: 180px;
@@ -371,6 +438,51 @@ details {
   color: #48617b;
 }
 
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #11223680;
+}
+
+.modal-card {
+  width: min(920px, 100%);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: #fffef9;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 24px 70px #1f2d3d3b;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-head h3 {
+  margin: 0;
+}
+
+.modal-body {
+  padding: 14px 16px 18px;
+  overflow: auto;
+  line-height: 1.55;
+}
+
+.modal-body .log-pre {
+  max-height: none;
+}
+
 @media (max-width: 900px) {
   .topbar {
     flex-direction: column;
@@ -394,6 +506,10 @@ details {
 @media (max-width: 640px) {
   .app-shell {
     margin-top: 12px;
+  }
+
+  .modal {
+    padding: 10px;
   }
 
   .login-row,

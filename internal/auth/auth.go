@@ -18,6 +18,7 @@ type Client struct {
 	APIKey               string
 	MaxRequestsPerMinute int
 	MaxConcurrent        int
+	Disabled             bool
 	AllowedModels        map[string]struct{}
 	limiter              *rate.Limiter
 	sem                  chan struct{}
@@ -53,6 +54,9 @@ func (m *Manager) Authenticate(r *http.Request) (*Client, error) {
 	m.mu.RUnlock()
 	if !ok {
 		return nil, errors.New("invalid api key")
+	}
+	if client.Disabled {
+		return nil, errors.New("api key is disabled")
 	}
 
 	return client, nil
@@ -202,6 +206,7 @@ func (m *Manager) ListClients() []config.ClientConfig {
 			MaxRequestsPerMinute: client.MaxRequestsPerMinute,
 			MaxConcurrent:        client.MaxConcurrent,
 			AllowedModels:        allowedModels,
+			Disabled:             client.Disabled,
 		})
 	}
 	m.mu.RUnlock()
@@ -255,6 +260,7 @@ func buildClient(clientCfg config.ClientConfig) (*Client, error) {
 		APIKey:               apiKey,
 		MaxRequestsPerMinute: maxRPM,
 		MaxConcurrent:        maxConcurrent,
+		Disabled:             clientCfg.Disabled,
 		AllowedModels:        map[string]struct{}{},
 	}
 

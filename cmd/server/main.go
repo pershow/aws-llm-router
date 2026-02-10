@@ -45,6 +45,7 @@ type adminClientPayload struct {
 	MaxRequestsPerMinute int      `json:"max_requests_per_minute"`
 	MaxConcurrent        int      `json:"max_concurrent"`
 	AllowedModels        []string `json:"allowed_models"`
+	Disabled             bool     `json:"disabled"`
 }
 
 type adminAWSPayload struct {
