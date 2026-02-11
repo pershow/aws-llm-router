@@ -1,5 +1,5 @@
 const state = {
-  adminToken: localStorage.getItem("adminToken") || "",
+  adminToken: localStorage.getItem("salessavvyToken") || "",
   config: null,
   calls: {
     page: 1,
@@ -234,7 +234,7 @@ function authHeaders() {
     ...(token
       ? {
           Authorization: `Bearer ${token}`,
-          "x-admin-token": token,
+          "x-salessavvy-token": token,
         }
       : {}),
   };
@@ -795,12 +795,12 @@ function parseAllowedModels(value) {
 async function connect() {
   const token = el.loginToken.value.trim();
   if (!token) {
-    setLoginStatus("Please input admin token.", true);
+    setLoginStatus("Please input salessavvy token.", true);
     return;
   }
 
   state.adminToken = token;
-  localStorage.setItem("adminToken", token);
+  localStorage.setItem("salessavvyToken", token);
 
   try {
     await loadConfig();
@@ -819,7 +819,7 @@ async function connect() {
 function logout() {
   closeContentModal();
   state.adminToken = "";
-  localStorage.removeItem("adminToken");
+  localStorage.removeItem("salessavvyToken");
   el.loginToken.value = "";
   setStatus("Logged out.");
   showLogin();
@@ -872,27 +872,27 @@ async function init() {
     try {
       const newToken = el.adminTokenInput.value.trim();
       if (!newToken) {
-        setAdminTokenStatus("New admin token is required.", true);
+        setAdminTokenStatus("New salessavvy token is required.", true);
         return;
       }
 
       // Update token BEFORE making the request to avoid race condition
       const oldToken = state.adminToken;
 
-      await request(apiPath("/config/admin-token"), {
+      await request(apiPath("/config/salessavvy-token"), {
         method: "POST",
         body: JSON.stringify({
-          admin_token: newToken,
+          salessavvy_token: newToken,
         }),
       });
 
       // Update state and storage immediately after successful response
       state.adminToken = newToken;
-      localStorage.setItem("adminToken", newToken);
+      localStorage.setItem("salessavvyToken", newToken);
       el.loginToken.value = newToken;
       el.adminTokenInput.value = "";
-      setAdminTokenStatus("Admin token updated successfully. Using new token for future requests.");
-      setStatus("Admin token updated.");
+      setAdminTokenStatus("Salessavvy token updated successfully. Using new token for future requests.");
+      setStatus("Salessavvy token updated.");
     } catch (error) {
       if (error?.status === 401 || error?.status === 403) {
         setAdminTokenStatus("Authentication failed. Please logout and login again with the current token.", true);
@@ -1100,7 +1100,7 @@ async function init() {
   }
 
   showLogin();
-  setLoginStatus("Use admin token to login. Default is admin123.");
+  setLoginStatus("Use salessavvy token to login. Default is admin123.");
 }
 
 init();

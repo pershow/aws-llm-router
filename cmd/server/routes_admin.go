@@ -43,7 +43,7 @@ type adminBillingPayload struct {
 }
 
 type adminTokenPayload struct {
-	AdminToken string `json:"admin_token"`
+	AdminToken string `json:"salessavvy_token"`
 }
 
 type adminUsageClientRow struct {
@@ -77,7 +77,7 @@ func registerAdminRoutes(mux *http.ServeMux, app *App) {
 	mux.HandleFunc(adminAPIPath("/config/models"), app.requireAdmin(app.handleAdminEnabledModels))
 	mux.HandleFunc(adminAPIPath("/config/models/refresh"), app.requireAdmin(app.handleAdminRefreshModels))
 	mux.HandleFunc(adminAPIPath("/config/model-pricing"), app.requireAdmin(app.handleAdminModelPricing))
-	mux.HandleFunc(adminAPIPath("/config/admin-token"), app.requireAdmin(app.handleAdminTokenConfig))
+	mux.HandleFunc(adminAPIPath("/config/salessavvy-token"), app.requireAdmin(app.handleAdminTokenConfig))
 	mux.HandleFunc(adminAPIPath("/config/billing"), app.requireAdmin(app.handleAdminBillingConfig))
 	mux.HandleFunc(adminAPIPath("/config/clients"), app.requireAdmin(app.handleAdminClients))
 	mux.HandleFunc(adminAPIPath("/usage"), app.requireAdmin(app.handleAdminUsage))
@@ -265,7 +265,7 @@ func (a *App) handleAdminTokenConfig(w http.ResponseWriter, r *http.Request) {
 
 	adminToken := strings.TrimSpace(payload.AdminToken)
 	if adminToken == "" {
-		writeAdminError(w, http.StatusBadRequest, "admin_token is required")
+		writeAdminError(w, http.StatusBadRequest, "salessavvy_token is required")
 		return
 	}
 

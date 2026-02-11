@@ -43,7 +43,7 @@ type ClientConfig struct {
 func Load() (Config, error) {
 	cfg := Config{
 		ListenAddr:            getEnv("LISTEN_ADDR", ":8080"),
-		RequestTimeout:        time.Duration(getEnvInt("REQUEST_TIMEOUT_SECONDS", 120)) * time.Second,
+		RequestTimeout:        time.Duration(getEnvInt("REQUEST_TIMEOUT_SECONDS", 300)) * time.Second,
 		MaxBodyBytes:          int64(getEnvInt("MAX_BODY_BYTES", 0)),
 		AWSRegion:             strings.TrimSpace(os.Getenv("AWS_REGION")),
 		AWSAccessKeyID:        strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")),

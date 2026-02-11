@@ -115,14 +115,14 @@ func extractAdminToken(r *http.Request) string {
 	if token := extractBearerToken(r.Header.Get("Authorization")); token != "" {
 		return token
 	}
-	return strings.TrimSpace(r.Header.Get("x-admin-token"))
+	return strings.TrimSpace(r.Header.Get("x-salessavvy-token"))
 }
 
 func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		adminToken := a.getAdminToken()
 		if adminToken == "" {
-			writeAdminError(w, http.StatusServiceUnavailable, "admin token is not initialized")
+			writeAdminError(w, http.StatusServiceUnavailable, "salessavvy token is not initialized")
 			return
 		}
 

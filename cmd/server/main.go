@@ -175,7 +175,7 @@ func main() {
 	mux := http.NewServeMux()
 	registerPublicRoutes(mux, app)
 	registerAdminRoutes(mux, app)
-	// Admin 前端静态资源；访问 /backendSalsSavvyLLMRouter 无尾斜杠时重定向到带尾斜杠
+	// Admin 前端静态资源；访问 /salessavvy 无尾斜杠时重定向到带尾斜杠
 	mux.HandleFunc(strings.TrimSuffix(adminStaticPath(), "/"), func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, adminStaticPath(), http.StatusMovedPermanently)
 	})

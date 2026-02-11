@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -571,6 +572,10 @@ func (a *App) handleChatCompletionsStream(
 	if err != nil {
 		statusCode = http.StatusBadGateway
 		errorMessage := "bedrock stream failed: " + err.Error()
+		// context canceled 多为客户端断开、代理超时或服务端 REQUEST_TIMEOUT 过短
+		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
+			errorMessage += " (请求被取消：请检查 Cursor/代理是否过早断开，或调大环境变量 REQUEST_TIMEOUT_SECONDS)"
+		}
 
 		// 在尚未开始向客户端写入任何 SSE 数据时，直接按 OpenAI 错误格式返回 JSON，
 		// 这样 Cursor 可以在 UI 中清晰展示错误信息，而不会出现“什么都没显示”的情况。
@@ -804,6 +809,9 @@ func (a *App) handleResponsesStream(
 	if err != nil {
 		statusCode = http.StatusBadGateway
 		errorMessage := "bedrock stream failed: " + err.Error()
+		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
+			errorMessage += " (请求被取消：请检查 Cursor/代理是否过早断开，或调大环境变量 REQUEST_TIMEOUT_SECONDS)"
+		}
 		_ = emitEvent(map[string]any{
 			"type":        "response.error",
 			"response_id": responseID,
