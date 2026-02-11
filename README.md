@@ -125,13 +125,12 @@ In Cursor, use OpenAI-compatible custom endpoint:
 
 ### Cursor Agent Mode
 
-This router fully supports Cursor's Agent mode with tool calling. If you experience issues where the model returns text descriptions instead of calling tools:
+This router fully supports Cursor's Agent mode with tool calling. If you see tool loops or write/edit attempts that never complete:
 
-1. **Enable debug logging**: Add `DEBUG_REQUESTS=true` to `.env` and restart
-2. **Check the logs**: Look for `⚠️ 请求包含 X 个工具定义` to confirm Cursor is sending tools
-3. **Run diagnostics**: See `QUICK_DIAGNOSIS.md` for detailed troubleshooting
-4. **Apply force tool patch** (if needed): Run `.\apply_force_tool_patch.ps1` to force tool usage
-
+1. **Enable debug logging**: Add `DEBUG_REQUESTS=true` to `.env` and restart.
+2. **Confirm tools are present**: Check server logs for the `request includes X tools` diagnostic line.
+3. **Avoid truncated tool arguments**: Keep `MIN_TOOL_MAX_OUTPUT_TOKENS=8192` (or higher) so tool-call JSON is less likely to be cut off with `finish_reason=length`.
+4. **Force initial tool use if needed**: Set `FORCE_TOOL_USE=true` when the model refuses to call tools.
 **Quick test:**
 ```powershell
 .\test_tool_calling.ps1 -ApiKey "your-api-key"

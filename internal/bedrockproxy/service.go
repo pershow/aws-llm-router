@@ -39,6 +39,7 @@ type Service struct {
 	mu                    sync.RWMutex
 	defaultModelID        string
 	defaultMaxOutputToken int32
+	minToolMaxOutputToken int32
 	forceToolUse          bool // 当请求包含 tools 时，强制模型调用工具
 	bufferToolCallArgs    bool // 为 true 时在流结束时一次性发送完整 tool_calls 参数（与 bedrock-access-gateway 一致时为 false，按 delta 逐条转发）
 }
@@ -65,6 +66,7 @@ func NewService(
 	defaultModelID string,
 	modelRouter map[string]string,
 	defaultMaxOutputToken int32,
+	minToolMaxOutputToken int32,
 	forceToolUse bool,
 	bufferToolCallArgs bool,
 ) *Service {
@@ -74,6 +76,7 @@ func NewService(
 		client:                client,
 		defaultModelID:        strings.TrimSpace(defaultModelID),
 		defaultMaxOutputToken: defaultMaxOutputToken,
+		minToolMaxOutputToken: minToolMaxOutputToken,
 		forceToolUse:          forceToolUse,
 		bufferToolCallArgs:    bufferToolCallArgs,
 	}
@@ -195,13 +198,25 @@ func (s *Service) Converse(ctx context.Context, request openai.ChatCompletionReq
 	s.mu.RLock()
 	client := s.client
 	defaultMaxOutputToken := s.defaultMaxOutputToken
+	minToolMaxOutputToken := s.minToolMaxOutputToken
 	s.mu.RUnlock()
 
 	if client == nil {
 		return ChatResult{}, errors.New("bedrock client is not configured")
 	}
 
-	inferenceConfig := buildInferenceConfig(request, defaultMaxOutputToken)
+	inferenceConfig, maxTokensRaised, originalMaxTokens, effectiveMaxTokens := buildInferenceConfig(
+		request,
+		defaultMaxOutputToken,
+		minToolMaxOutputToken,
+	)
+	if maxTokensRaised {
+		fmt.Printf(
+			"[WARN Converse] raised max_tokens from %d to %d because tools are present (MIN_TOOL_MAX_OUTPUT_TOKENS)\n",
+			originalMaxTokens,
+			effectiveMaxTokens,
+		)
+	}
 
 	output, err := client.Converse(ctx, &bedrockruntime.ConverseInput{
 		ModelId:         aws.String(bedrockModelID),
@@ -229,6 +244,7 @@ func (s *Service) Converse(ctx context.Context, request openai.ChatCompletionReq
 	if output.Metrics != nil {
 		result.LatencyMs = ptrInt64(output.Metrics.LatencyMs)
 	}
+	maybeLogTruncatedToolCalls("Converse", result.FinishReason, result.ToolCalls, result.OutputTokens)
 
 	return result, nil
 }
@@ -284,13 +300,25 @@ func (s *Service) ConverseStream(
 	s.mu.RLock()
 	client := s.client
 	defaultMaxOutputToken := s.defaultMaxOutputToken
+	minToolMaxOutputToken := s.minToolMaxOutputToken
 	s.mu.RUnlock()
 
 	if client == nil {
 		return ChatResult{}, errors.New("bedrock client is not configured")
 	}
 
-	inferenceConfig := buildInferenceConfig(request, defaultMaxOutputToken)
+	inferenceConfig, maxTokensRaised, originalMaxTokens, effectiveMaxTokens := buildInferenceConfig(
+		request,
+		defaultMaxOutputToken,
+		minToolMaxOutputToken,
+	)
+	if maxTokensRaised {
+		fmt.Printf(
+			"[WARN ConverseStream] raised max_tokens from %d to %d because tools are present (MIN_TOOL_MAX_OUTPUT_TOKENS)\n",
+			originalMaxTokens,
+			effectiveMaxTokens,
+		)
+	}
 
 	output, err := client.ConverseStream(ctx, &bedrockruntime.ConverseStreamInput{
 		ModelId:         aws.String(bedrockModelID),
@@ -458,6 +486,7 @@ func (s *Service) ConverseStream(
 
 	result.Text = textBuilder.String()
 	result.ToolCalls = toolCalls
+	maybeLogTruncatedToolCalls("ConverseStream", result.FinishReason, result.ToolCalls, result.OutputTokens)
 	return result, nil
 }
 
@@ -1269,7 +1298,11 @@ func ptrInt64(value *int64) int64 {
 	return *value
 }
 
-func buildInferenceConfig(request openai.ChatCompletionRequest, defaultMaxOutputToken int32) *brtypes.InferenceConfiguration {
+func buildInferenceConfig(
+	request openai.ChatCompletionRequest,
+	defaultMaxOutputToken int32,
+	minToolMaxOutputToken int32,
+) (*brtypes.InferenceConfiguration, bool, int32, int32) {
 	inferenceConfig := &brtypes.InferenceConfiguration{}
 	hasAny := false
 
@@ -1281,16 +1314,84 @@ func buildInferenceConfig(request openai.ChatCompletionRequest, defaultMaxOutput
 		inferenceConfig.TopP = aws.Float32(float32(*request.TopP))
 		hasAny = true
 	}
+
+	originalMaxTokens := int32(0)
+	effectiveMaxTokens := int32(0)
+
 	if request.MaxTokens != nil && *request.MaxTokens > 0 {
-		inferenceConfig.MaxTokens = aws.Int32(int32(*request.MaxTokens))
-		hasAny = true
+		originalMaxTokens = safeIntToInt32(*request.MaxTokens)
+		effectiveMaxTokens = originalMaxTokens
 	} else if defaultMaxOutputToken > 0 {
-		inferenceConfig.MaxTokens = aws.Int32(defaultMaxOutputToken)
+		effectiveMaxTokens = defaultMaxOutputToken
+	}
+
+	maxTokensRaised := false
+	if len(request.Tools) > 0 && minToolMaxOutputToken > 0 && effectiveMaxTokens < minToolMaxOutputToken {
+		maxTokensRaised = true
+		effectiveMaxTokens = minToolMaxOutputToken
+	}
+	if effectiveMaxTokens > 0 {
+		inferenceConfig.MaxTokens = aws.Int32(effectiveMaxTokens)
 		hasAny = true
 	}
 
 	if !hasAny {
-		return nil
+		return nil, false, 0, 0
 	}
-	return inferenceConfig
+	return inferenceConfig, maxTokensRaised, originalMaxTokens, effectiveMaxTokens
+}
+
+func maybeLogTruncatedToolCalls(stage string, finishReason string, toolCalls []openai.ToolCall, outputTokens int) {
+	if strings.TrimSpace(finishReason) != "length" || len(toolCalls) == 0 {
+		return
+	}
+
+	fmt.Printf(
+		"[WARN %s] finish_reason=length with %d tool_calls (completion_tokens=%d). Tool arguments may be truncated.\n",
+		stage,
+		len(toolCalls),
+		outputTokens,
+	)
+
+	for index, toolCall := range toolCalls {
+		args := strings.TrimSpace(toolCall.Function.Arguments)
+		if args == "" {
+			fmt.Printf(
+				"[WARN %s] tool_call[%d] id=%s name=%s has empty arguments.\n",
+				stage,
+				index,
+				toolCall.ID,
+				toolCall.Function.Name,
+			)
+			continue
+		}
+
+		var parsed any
+		if err := json.Unmarshal([]byte(args), &parsed); err != nil {
+			preview := args
+			if len(preview) > 160 {
+				preview = preview[:160] + "..."
+			}
+			fmt.Printf(
+				"[WARN %s] tool_call[%d] id=%s name=%s has invalid/truncated JSON arguments: %v preview=%q\n",
+				stage,
+				index,
+				toolCall.ID,
+				toolCall.Function.Name,
+				err,
+				preview,
+			)
+		}
+	}
+}
+
+func safeIntToInt32(value int) int32 {
+	if value <= 0 {
+		return 0
+	}
+	const maxInt32 = int(^uint32(0) >> 1)
+	if value > maxInt32 {
+		return int32(maxInt32)
+	}
+	return int32(value)
 }

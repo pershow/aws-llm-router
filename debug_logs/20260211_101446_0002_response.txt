@@ -1,7 +1,0 @@
-{
-  "error": {
-    "message": "bedrock stream failed: operation error Bedrock Runtime: ConverseStream, https response error StatusCode: 400, RequestID: 960a332e-5041-49ae-93ea-56bdb9e0aff6, ValidationException: The number of toolResult blocks at messages.2.content exceeds the number of toolUse blocks of previous turn.",
-    "type": "invalid_request_error",
-    "code": "502"
-  }
-}

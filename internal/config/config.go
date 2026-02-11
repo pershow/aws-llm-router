@@ -18,17 +18,18 @@ type Config struct {
 	AWSSessionToken       string
 	DefaultModelID        string
 	DefaultMaxOutputToken int32
+	MinToolMaxOutputToken int32 // Minimum max_tokens when tools are present. 0 disables this safeguard.
 	GlobalMaxConcurrent   int
 	DBPath                string
 	LogQueueSize          int
 	MaxContentChars       int
-	ForceToolUse          bool   // 当请求包含 tools 时，强制模型调用工具
-	BufferToolCallArgs    bool   // 为 true 时在流结束时一次性发送完整 tool_calls 参数（否则与 bedrock-access-gateway 一致，按 delta 逐条转发）
-	TLSProxyEnabled       bool   // 是否启用内置 TLS 反向代理
-	TLSProxyListenAddr    string // TLS 反向代理监听地址，例如 :443
-	TLSProxyCertFile      string // TLS 证书文件路径
-	TLSProxyKeyFile       string // TLS 私钥文件路径
-	TLSProxyTargetURL     string // 反向代理的目标地址，例如 http://127.0.0.1:8080
+	ForceToolUse          bool
+	BufferToolCallArgs    bool
+	TLSProxyEnabled       bool
+	TLSProxyListenAddr    string
+	TLSProxyCertFile      string
+	TLSProxyKeyFile       string
+	TLSProxyTargetURL     string
 }
 
 type ClientConfig struct {
@@ -52,21 +53,25 @@ func Load() (Config, error) {
 		AWSSessionToken:       strings.TrimSpace(os.Getenv("AWS_SESSION_TOKEN")),
 		DefaultModelID:        strings.TrimSpace(os.Getenv("DEFAULT_MODEL_ID")),
 		DefaultMaxOutputToken: int32(getEnvInt("DEFAULT_MAX_OUTPUT_TOKENS", 0)),
+		MinToolMaxOutputToken: int32(getEnvInt("MIN_TOOL_MAX_OUTPUT_TOKENS", 8192)),
 		GlobalMaxConcurrent:   getEnvInt("GLOBAL_MAX_CONCURRENT", 512),
 		DBPath:                getEnv("DB_PATH", "./data/router.db"),
-		LogQueueSize:       getEnvInt("LOG_QUEUE_SIZE", 10000),
-		MaxContentChars:    getEnvInt("MAX_CONTENT_CHARS", 20000),
-		ForceToolUse:       getEnvBool("FORCE_TOOL_USE", true),       // 默认启用，强制模型调用工具
-		BufferToolCallArgs: getEnvBool("BUFFER_TOOL_CALL_ARGS", false), // 默认 false，与 gateway 一致按 delta 转发
-		TLSProxyEnabled:    getEnvBool("TLS_PROXY_ENABLED", false),
-		TLSProxyListenAddr: getEnv("TLS_PROXY_LISTEN_ADDR", ":443"),
-		TLSProxyCertFile:   strings.TrimSpace(os.Getenv("TLS_PROXY_CERT_FILE")),
-		TLSProxyKeyFile:    strings.TrimSpace(os.Getenv("TLS_PROXY_KEY_FILE")),
-		TLSProxyTargetURL:  getEnv("TLS_PROXY_TARGET_URL", "http://127.0.0.1:8080"),
+		LogQueueSize:          getEnvInt("LOG_QUEUE_SIZE", 10000),
+		MaxContentChars:       getEnvInt("MAX_CONTENT_CHARS", 20000),
+		ForceToolUse:          getEnvBool("FORCE_TOOL_USE", true),
+		BufferToolCallArgs:    getEnvBool("BUFFER_TOOL_CALL_ARGS", false),
+		TLSProxyEnabled:       getEnvBool("TLS_PROXY_ENABLED", false),
+		TLSProxyListenAddr:    getEnv("TLS_PROXY_LISTEN_ADDR", ":443"),
+		TLSProxyCertFile:      strings.TrimSpace(os.Getenv("TLS_PROXY_CERT_FILE")),
+		TLSProxyKeyFile:       strings.TrimSpace(os.Getenv("TLS_PROXY_KEY_FILE")),
+		TLSProxyTargetURL:     getEnv("TLS_PROXY_TARGET_URL", "http://127.0.0.1:8080"),
 	}
 
 	if cfg.DefaultMaxOutputToken < 0 {
 		return Config{}, errors.New("DEFAULT_MAX_OUTPUT_TOKENS must be >= 0")
+	}
+	if cfg.MinToolMaxOutputToken < 0 {
+		return Config{}, errors.New("MIN_TOOL_MAX_OUTPUT_TOKENS must be >= 0")
 	}
 	if cfg.MaxBodyBytes < 0 {
 		return Config{}, errors.New("MAX_BODY_BYTES must be >= 0")

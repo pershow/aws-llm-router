@@ -130,6 +130,7 @@ func main() {
 	logger.Printf("   BUFFER_TOOL_CALL_ARGS = %v", cfg.BufferToolCallArgs)
 	logger.Printf("   DEFAULT_MODEL_ID = %s", cfg.DefaultModelID)
 	logger.Printf("   DEFAULT_MAX_OUTPUT_TOKENS = %d", cfg.DefaultMaxOutputToken)
+	logger.Printf("   MIN_TOOL_MAX_OUTPUT_TOKENS = %d", cfg.MinToolMaxOutputToken)
 	logger.Printf("========================================")
 	if cfg.ForceToolUse {
 		logger.Printf("✅ 强制工具调用已启用：当请求包含 tools 时，模型将被强制调用工具")
@@ -142,6 +143,7 @@ func main() {
 		cfg.DefaultModelID,
 		nil,
 		cfg.DefaultMaxOutputToken,
+		cfg.MinToolMaxOutputToken,
 		cfg.ForceToolUse,
 		cfg.BufferToolCallArgs,
 	)
