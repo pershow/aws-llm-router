@@ -283,6 +283,72 @@ func TestBuildBedrockMessagesWithFunctionCallOutputContent(t *testing.T) {
 	}
 }
 
+func TestBuildBedrockMessagesWithToolResultTextArrayContent(t *testing.T) {
+	messages := []openai.ChatMessage{
+		{
+			Role:    "assistant",
+			Content: json.RawMessage(`null`),
+			ToolCalls: []openai.ToolCall{
+				{
+					ID:   "call_text_1",
+					Type: "function",
+					Function: openai.ToolCallFunction{
+						Name:      "Read",
+						Arguments: `{"path":"src/components/home/Hero.tsx"}`,
+					},
+				},
+			},
+		},
+		{
+			Role: "user",
+			Content: json.RawMessage(`[
+				{
+					"type": "tool_result",
+					"tool_use_id": "call_text_1",
+					"content": [
+						{"type":"text","text":"line 1"},
+						{"type":"output_text","text":"line 2"}
+					]
+				}
+			]`),
+		},
+	}
+
+	outMessages, _, err := BuildBedrockMessages(messages)
+	if err != nil {
+		t.Fatalf("BuildBedrockMessages returned error: %v", err)
+	}
+	if len(outMessages) != 2 {
+		t.Fatalf("expected 2 output messages, got %d", len(outMessages))
+	}
+
+	toolResultMsg := outMessages[1]
+	if toolResultMsg.Role != brtypes.ConversationRoleUser {
+		t.Fatalf("expected tool result message role user, got %v", toolResultMsg.Role)
+	}
+	if len(toolResultMsg.Content) != 1 {
+		t.Fatalf("expected one tool result block, got %d", len(toolResultMsg.Content))
+	}
+	resultBlock, ok := toolResultMsg.Content[0].(*brtypes.ContentBlockMemberToolResult)
+	if !ok {
+		t.Fatalf("expected tool result block, got %T", toolResultMsg.Content[0])
+	}
+	if len(resultBlock.Value.Content) != 2 {
+		t.Fatalf("expected two inner content blocks, got %d", len(resultBlock.Value.Content))
+	}
+	firstText, ok := resultBlock.Value.Content[0].(*brtypes.ToolResultContentBlockMemberText)
+	if !ok {
+		t.Fatalf("expected first inner block text, got %T", resultBlock.Value.Content[0])
+	}
+	secondText, ok := resultBlock.Value.Content[1].(*brtypes.ToolResultContentBlockMemberText)
+	if !ok {
+		t.Fatalf("expected second inner block text, got %T", resultBlock.Value.Content[1])
+	}
+	if firstText.Value != "line 1" || secondText.Value != "line 2" {
+		t.Fatalf("unexpected text content: first=%q second=%q", firstText.Value, secondText.Value)
+	}
+}
+
 func assertJSONEqual(t *testing.T, got, want string) {
 	t.Helper()
 

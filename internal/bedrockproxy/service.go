@@ -1,9 +1,10 @@
 // Package bedrockproxy 实现 OpenAI 兼容的 Bedrock Converse 代理。
 //
 // 工具调用参数为何是多条 delta：
-//   Bedrock ConverseStream 按 token/片段推送 toolUse.input，不会等整段 arguments 生成完再返回。
-//   与 bedrock-access-gateway 一致，默认逐条转发每个 delta，客户端需自行累积 arguments。
-//   若希望「组装好一次性发过去」，可设置 BUFFER_TOOL_CALL_ARGS=true，在 MessageStop 时发送完整参数。
+//
+//	Bedrock ConverseStream 按 token/片段推送 toolUse.input，不会等整段 arguments 生成完再返回。
+//	与 bedrock-access-gateway 一致，默认逐条转发每个 delta，客户端需自行累积 arguments。
+//	若希望「组装好一次性发过去」，可设置 BUFFER_TOOL_CALL_ARGS=true，在 MessageStop 时发送完整参数。
 //
 // Cursor 兼容性对齐 bedrock-access-gateway（PR #110 / Issue #84）：
 //   - BuildBedrockMessages：连续 role=tool 合并为一条 user（多个 toolResult），避免 ValidationException。
@@ -667,11 +668,82 @@ func parseToolResultContent(raw json.RawMessage) ([]brtypes.ToolResultContentBlo
 		return []brtypes.ToolResultContentBlock{
 			&brtypes.ToolResultContentBlockMemberText{Value: value},
 		}, nil
+	case []any:
+		blocks := parseToolResultArrayContent(value)
+		if len(blocks) > 0 {
+			return blocks, nil
+		}
+		return []brtypes.ToolResultContentBlock{
+			&brtypes.ToolResultContentBlockMemberText{Value: trimmed},
+		}, nil
+	case map[string]any:
+		if text, ok := extractToolResultTextFromObject(value); ok {
+			return []brtypes.ToolResultContentBlock{
+				&brtypes.ToolResultContentBlockMemberText{Value: text},
+			}, nil
+		}
+		return []brtypes.ToolResultContentBlock{
+			&brtypes.ToolResultContentBlockMemberJson{Value: document.NewLazyDocument(value)},
+		}, nil
 	default:
 		return []brtypes.ToolResultContentBlock{
 			&brtypes.ToolResultContentBlockMemberJson{Value: document.NewLazyDocument(payload)},
 		}, nil
 	}
+}
+
+func parseToolResultArrayContent(items []any) []brtypes.ToolResultContentBlock {
+	blocks := make([]brtypes.ToolResultContentBlock, 0, len(items))
+	for _, item := range items {
+		switch value := item.(type) {
+		case string:
+			blocks = append(blocks, &brtypes.ToolResultContentBlockMemberText{Value: value})
+		case map[string]any:
+			if text, ok := extractToolResultTextFromObject(value); ok {
+				blocks = append(blocks, &brtypes.ToolResultContentBlockMemberText{Value: text})
+				continue
+			}
+			blob, err := json.Marshal(value)
+			if err != nil {
+				continue
+			}
+			blocks = append(blocks, &brtypes.ToolResultContentBlockMemberText{Value: string(blob)})
+		default:
+			if item == nil {
+				continue
+			}
+			blob, err := json.Marshal(item)
+			if err != nil {
+				continue
+			}
+			blocks = append(blocks, &brtypes.ToolResultContentBlockMemberText{Value: string(blob)})
+		}
+	}
+	return blocks
+}
+
+func extractToolResultTextFromObject(value map[string]any) (string, bool) {
+	itemType, _ := value["type"].(string)
+	itemType = strings.ToLower(strings.TrimSpace(itemType))
+
+	switch itemType {
+	case "text", "input_text", "output_text":
+		if text, ok := value["text"].(string); ok {
+			return text, true
+		}
+		if text, ok := value["content"].(string); ok {
+			return text, true
+		}
+	}
+
+	// Fallback for loosely-typed text-like blocks.
+	if text, ok := value["text"].(string); ok {
+		return text, true
+	}
+	if text, ok := value["content"].(string); ok {
+		return text, true
+	}
+	return "", false
 }
 
 func buildInlineToolResultBlocks(raw json.RawMessage) ([]brtypes.ContentBlock, error) {
