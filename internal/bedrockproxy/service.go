@@ -275,12 +275,6 @@ func (s *Service) ConverseStream(
 			if !ok {
 				continue
 			}
-			if !roleSent {
-				roleSent = true
-				if err := onDelta(StreamDelta{Role: "assistant"}); err != nil {
-					return ChatResult{}, err
-				}
-			}
 
 			toolCallIndex := len(toolCalls)
 			toolCallID := strings.TrimSpace(aws.ToString(toolStart.Value.ToolUseId))
@@ -304,7 +298,9 @@ func (s *Service) ConverseStream(
 			})
 			toolCallIndexByContentBlock[blockIndex] = toolCallIndex
 
-			if err := onDelta(StreamDelta{
+			// 根据 OpenAI 规范，第一个 tool_call chunk 需要同时包含 role 和 tool_calls
+			// 这样客户端（如 Cursor）才能正确解析流式 tool_calls
+			delta := StreamDelta{
 				ToolCalls: []openai.ChatChunkToolCall{{
 					Index: toolCallIndex,
 					ID:    toolCallID,
@@ -313,7 +309,12 @@ func (s *Service) ConverseStream(
 						Name: toolName,
 					},
 				}},
-			}); err != nil {
+			}
+			if !roleSent {
+				roleSent = true
+				delta.Role = "assistant"
+			}
+			if err := onDelta(delta); err != nil {
 				return ChatResult{}, err
 			}
 		case *brtypes.ConverseStreamOutputMemberContentBlockDelta:

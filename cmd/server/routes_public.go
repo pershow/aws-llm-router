@@ -529,6 +529,27 @@ func (a *App) handleChatCompletionsStream(
 	defer streamCancel()
 
 	result, err := a.proxy.ConverseStream(streamCtx, request, bedrockModelID, func(delta bedrockproxy.StreamDelta) error {
+		// 根据 OpenAI 规范，tool_calls 的第一个 chunk 需要同时包含 role 和 tool_calls
+		// 所以我们需要检查是否同时有 role 和 tool_calls，如果有则合并到一个 chunk 中发送
+		if len(delta.ToolCalls) > 0 {
+			chunkDelta := openai.ChatChunkDelta{ToolCalls: delta.ToolCalls}
+			if delta.Role != "" {
+				chunkDelta.Role = delta.Role
+			}
+			if err := writeSSEData(w, openai.ChatCompletionChunk{
+				ID:      chunkID,
+				Object:  "chat.completion.chunk",
+				Created: createdAt,
+				Model:   modelName,
+				Choices: []openai.ChatChunkChoice{{
+					Index: 0,
+					Delta: chunkDelta,
+				}},
+			}); err != nil {
+				return err
+			}
+			return nil
+		}
 		if delta.Role != "" {
 			if err := writeSSEData(w, openai.ChatCompletionChunk{
 				ID:      chunkID,
@@ -553,20 +574,6 @@ func (a *App) handleChatCompletionsStream(
 				Choices: []openai.ChatChunkChoice{{
 					Index: 0,
 					Delta: openai.ChatChunkDelta{Content: delta.Text},
-				}},
-			}); err != nil {
-				return err
-			}
-		}
-		if len(delta.ToolCalls) > 0 {
-			if err := writeSSEData(w, openai.ChatCompletionChunk{
-				ID:      chunkID,
-				Object:  "chat.completion.chunk",
-				Created: createdAt,
-				Model:   modelName,
-				Choices: []openai.ChatChunkChoice{{
-					Index: 0,
-					Delta: openai.ChatChunkDelta{ToolCalls: delta.ToolCalls},
 				}},
 			}); err != nil {
 				return err
