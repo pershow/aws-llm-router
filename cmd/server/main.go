@@ -127,6 +127,7 @@ func main() {
 	logger.Printf("========================================")
 	logger.Printf("🔧 关键配置:")
 	logger.Printf("   FORCE_TOOL_USE = %v", cfg.ForceToolUse)
+	logger.Printf("   BUFFER_TOOL_CALL_ARGS = %v", cfg.BufferToolCallArgs)
 	logger.Printf("   DEFAULT_MODEL_ID = %s", cfg.DefaultModelID)
 	logger.Printf("   DEFAULT_MAX_OUTPUT_TOKENS = %d", cfg.DefaultMaxOutputToken)
 	logger.Printf("========================================")
@@ -142,6 +143,7 @@ func main() {
 		nil,
 		cfg.DefaultMaxOutputToken,
 		cfg.ForceToolUse,
+		cfg.BufferToolCallArgs,
 	)
 
 	adminSubFS, err := fs.Sub(adminUIFiles, "web/admin")

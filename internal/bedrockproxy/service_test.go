@@ -5,7 +5,7 @@ import "testing"
 func TestResolveModelDirect(t *testing.T) {
 	service := NewService(nil, "anthropic.default", map[string]string{
 		"gpt-4o": "anthropic.claude-3-7-sonnet-20250219-v1:0",
-	}, 2048, false)
+	}, 2048, false, false)
 
 	requested, bedrockID, err := service.ResolveModel("gpt-4o")
 	if err != nil {
@@ -20,7 +20,7 @@ func TestResolveModelDirect(t *testing.T) {
 }
 
 func TestResolveModelDefault(t *testing.T) {
-	service := NewService(nil, "anthropic.default", nil, 2048, false)
+	service := NewService(nil, "anthropic.default", nil, 2048, false, false)
 
 	requested, bedrockID, err := service.ResolveModel("")
 	if err != nil {

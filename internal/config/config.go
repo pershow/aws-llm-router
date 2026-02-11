@@ -23,6 +23,7 @@ type Config struct {
 	LogQueueSize          int
 	MaxContentChars       int
 	ForceToolUse          bool   // 当请求包含 tools 时，强制模型调用工具
+	BufferToolCallArgs    bool   // 为 true 时在流结束时一次性发送完整 tool_calls 参数（否则与 bedrock-access-gateway 一致，按 delta 逐条转发）
 	TLSProxyEnabled       bool   // 是否启用内置 TLS 反向代理
 	TLSProxyListenAddr    string // TLS 反向代理监听地址，例如 :443
 	TLSProxyCertFile      string // TLS 证书文件路径
@@ -55,7 +56,8 @@ func Load() (Config, error) {
 		DBPath:                getEnv("DB_PATH", "./data/router.db"),
 		LogQueueSize:       getEnvInt("LOG_QUEUE_SIZE", 10000),
 		MaxContentChars:    getEnvInt("MAX_CONTENT_CHARS", 20000),
-		ForceToolUse:       getEnvBool("FORCE_TOOL_USE", true), // 默认启用，强制模型调用工具
+		ForceToolUse:       getEnvBool("FORCE_TOOL_USE", true),       // 默认启用，强制模型调用工具
+		BufferToolCallArgs: getEnvBool("BUFFER_TOOL_CALL_ARGS", false), // 默认 false，与 gateway 一致按 delta 转发
 		TLSProxyEnabled:    getEnvBool("TLS_PROXY_ENABLED", false),
 		TLSProxyListenAddr: getEnv("TLS_PROXY_LISTEN_ADDR", ":443"),
 		TLSProxyCertFile:   strings.TrimSpace(os.Getenv("TLS_PROXY_CERT_FILE")),

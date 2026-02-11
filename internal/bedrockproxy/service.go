@@ -1,10 +1,14 @@
 // Package bedrockproxy 实现 OpenAI 兼容的 Bedrock Converse 代理。
 //
-// Cursor 兼容性对齐 bedrock-access-gateway 的修复（见该仓库 PR #110 / Issue #84）：
-//   - BuildBedrockMessages：连续多条 role=tool 合并为一条 user，content 为多个 toolResult，
-//     避免 "toolResult blocks 数量超过 toolUse" 的 ValidationException。
-//   - 流式 tool_calls：首个 chunk 带 role "assistant"，index 为 0-based；finish_reason 映射 tool_use -> tool_calls。
-//   - 路由层：model 为空或 "gpt-*" 时使用默认模型（与 gateway 的 gpt- -> DEFAULT_MODEL 一致）。
+// 工具调用参数为何是多条 delta：
+//   Bedrock ConverseStream 按 token/片段推送 toolUse.input，不会等整段 arguments 生成完再返回。
+//   与 bedrock-access-gateway 一致，默认逐条转发每个 delta，客户端需自行累积 arguments。
+//   若希望「组装好一次性发过去」，可设置 BUFFER_TOOL_CALL_ARGS=true，在 MessageStop 时发送完整参数。
+//
+// Cursor 兼容性对齐 bedrock-access-gateway（PR #110 / Issue #84）：
+//   - BuildBedrockMessages：连续 role=tool 合并为一条 user（多个 toolResult），避免 ValidationException。
+//   - 流式 tool_calls：首 chunk 带 role "assistant"，index 0-based；finish_reason 映射 tool_use -> tool_calls。
+//   - 路由层：model 为空或 "gpt-*" 时使用默认模型。
 package bedrockproxy
 
 import (
@@ -35,6 +39,7 @@ type Service struct {
 	defaultModelID        string
 	defaultMaxOutputToken int32
 	forceToolUse          bool // 当请求包含 tools 时，强制模型调用工具
+	bufferToolCallArgs    bool // 为 true 时在流结束时一次性发送完整 tool_calls 参数（与 bedrock-access-gateway 一致时为 false，按 delta 逐条转发）
 }
 
 type ChatResult struct {
@@ -60,6 +65,7 @@ func NewService(
 	modelRouter map[string]string,
 	defaultMaxOutputToken int32,
 	forceToolUse bool,
+	bufferToolCallArgs bool,
 ) *Service {
 	_ = modelRouter
 
@@ -68,6 +74,7 @@ func NewService(
 		defaultModelID:        strings.TrimSpace(defaultModelID),
 		defaultMaxOutputToken: defaultMaxOutputToken,
 		forceToolUse:          forceToolUse,
+		bufferToolCallArgs:    bufferToolCallArgs,
 	}
 }
 
@@ -211,6 +218,7 @@ func (s *Service) ConverseStream(
 
 	s.mu.RLock()
 	forceToolUse := s.forceToolUse
+	bufferToolCallArgs := s.bufferToolCallArgs
 	s.mu.RUnlock()
 
 	toolConfig, err := buildToolConfiguration(request.Tools, request.ToolChoice, forceToolUse)
@@ -358,19 +366,41 @@ func (s *Service) ConverseStream(
 					continue
 				}
 				toolCalls[toolCallIndex].Function.Arguments += *delta.Value.Input
-				if err := onDelta(StreamDelta{
-					ToolCalls: []openai.ChatChunkToolCall{{
-						Index: toolCallIndex,
-						Function: &openai.ToolCallFunction{
-							Arguments: *delta.Value.Input,
-						},
-					}},
-				}); err != nil {
-					return ChatResult{}, err
+				// 与 bedrock-access-gateway 一致：默认按 delta 逐条转发；BUFFER_TOOL_CALL_ARGS=true 时缓冲，在 MessageStop 时一次性发送完整参数
+				if !bufferToolCallArgs {
+					if err := onDelta(StreamDelta{
+						ToolCalls: []openai.ChatChunkToolCall{{
+							Index: toolCallIndex,
+							Function: &openai.ToolCallFunction{
+								Arguments: *delta.Value.Input,
+							},
+						}},
+					}); err != nil {
+						return ChatResult{}, err
+					}
 				}
 			}
 		case *brtypes.ConverseStreamOutputMemberMessageStop:
 			result.FinishReason = mapStopReason(value.Value.StopReason)
+			// BUFFER_TOOL_CALL_ARGS 时：在流结束前一次性发送完整 tool_calls 参数（组装好再发）
+			if bufferToolCallArgs && len(toolCalls) > 0 {
+				fullChunks := make([]openai.ChatChunkToolCall, 0, len(toolCalls))
+				for i, tc := range toolCalls {
+					args := tc.Function.Arguments
+					fullChunks = append(fullChunks, openai.ChatChunkToolCall{
+						Index: i,
+						ID:    tc.ID,
+						Type:  tc.Type,
+						Function: &openai.ToolCallFunction{
+							Name:      tc.Function.Name,
+							Arguments: args,
+						},
+					})
+				}
+				if err := onDelta(StreamDelta{ToolCalls: fullChunks}); err != nil {
+					return ChatResult{}, err
+				}
+			}
 			// 调试日志：消息结束
 			fmt.Printf("[DEBUG ConverseStream] 📍 消息结束: stopReason=%s, mappedFinishReason=%s, toolCallsCount=%d\n",
 				value.Value.StopReason, result.FinishReason, len(toolCalls))
