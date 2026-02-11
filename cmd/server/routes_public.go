@@ -658,8 +658,8 @@ func (a *App) handleResponsesStream(
 	createdAt := time.Now().Unix()
 	statusCode := http.StatusOK
 
-	// sequence_number 用于标识事件顺序，从 0 开始递增
-	var seqNum int64 = 0
+	// sequence_number 用于标识事件顺序，根据 OpenAI 规范从 1 开始递增
+	var seqNum int64 = 1
 	nextSeq := func() int64 {
 		n := seqNum
 		seqNum++
