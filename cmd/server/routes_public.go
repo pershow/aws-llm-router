@@ -687,6 +687,27 @@ func (a *App) handleResponsesStream(
 		"error":               nil,
 		"incomplete_details":  nil,
 		"usage":               nil,
+		"truncation":          "disabled",
+		"text": map[string]any{
+			"format": map[string]any{
+				"type": "text",
+			},
+		},
+		"reasoning": map[string]any{
+			"effort":  nil,
+			"summary": nil,
+		},
+		"tools":                []any{},
+		"instructions":         nil,
+		"previous_response_id": nil,
+		"metadata":             map[string]any{},
+	}
+	// 只有用户传入 temperature/top_p 时才在响应中包含
+	if request.Temperature != nil {
+		baseResponse["temperature"] = *request.Temperature
+	}
+	if request.TopP != nil {
+		baseResponse["top_p"] = *request.TopP
 	}
 
 	// response.created
@@ -847,8 +868,6 @@ func (a *App) handleResponsesStream(
 	}
 
 	result.Text = responseText.String()
-	outputItems := openai.BuildResponsesOutputItems(requestID, result.Text, result.ToolCalls)
-	outputText := openai.BuildResponsesOutputText(outputItems)
 
 	// 发送完成事件
 	// 1. 消息项的完成事件
@@ -958,23 +977,51 @@ func (a *App) handleResponsesStream(
 	}
 
 	// response.completed
+	completedAt := time.Now().Unix()
 	completedResponse := map[string]any{
 		"id":                  responseID,
 		"object":              "response",
 		"created_at":          createdAt,
+		"completed_at":        completedAt,
 		"status":              "completed",
 		"model":               modelName,
 		"output":              completedOutput,
-		"output_text":         outputText,
 		"parallel_tool_calls": boolOrDefault(request.ParallelToolCalls, true),
 		"tool_choice":         request.ToolChoice,
 		"error":               nil,
 		"incomplete_details":  nil,
+		"truncation":          "disabled",
+		"text": map[string]any{
+			"format": map[string]any{
+				"type": "text",
+			},
+		},
+		"reasoning": map[string]any{
+			"effort":  nil,
+			"summary": nil,
+		},
+		"tools":                []any{},
+		"instructions":         nil,
+		"previous_response_id": nil,
+		"metadata":             map[string]any{},
 		"usage": map[string]any{
 			"input_tokens":  result.InputTokens,
 			"output_tokens": result.OutputTokens,
 			"total_tokens":  result.TotalTokens,
+			"input_tokens_details": map[string]any{
+				"cached_tokens": 0,
+			},
+			"output_tokens_details": map[string]any{
+				"reasoning_tokens": 0,
+			},
 		},
+	}
+	// 只有用户传入 temperature/top_p 时才在响应中包含
+	if request.Temperature != nil {
+		completedResponse["temperature"] = *request.Temperature
+	}
+	if request.TopP != nil {
+		completedResponse["top_p"] = *request.TopP
 	}
 	if err := emitEvent(map[string]any{
 		"type":     "response.completed",
