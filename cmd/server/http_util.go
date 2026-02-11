@@ -163,8 +163,11 @@ func writeSSEData(w http.ResponseWriter, payload any) error {
 	if err != nil {
 		return err
 	}
-	// 调试日志：打印发送的 SSE 数据
-	fmt.Printf("[DEBUG SSE] data: %s\n", string(blob))
+	// 调试日志：打印发送的 SSE 数据（只打印包含 tool_calls 或 finish_reason 的数据）
+	blobStr := string(blob)
+	if strings.Contains(blobStr, "tool_calls") || strings.Contains(blobStr, "finish_reason") {
+		fmt.Printf("[DEBUG SSE] 🔧 data: %s\n", blobStr)
+	}
 	if _, err := io.WriteString(w, "data: "); err != nil {
 		return err
 	}

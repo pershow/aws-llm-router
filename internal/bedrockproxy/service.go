@@ -1,3 +1,10 @@
+// Package bedrockproxy 实现 OpenAI 兼容的 Bedrock Converse 代理。
+//
+// Cursor 兼容性对齐 bedrock-access-gateway 的修复（见该仓库 PR #110 / Issue #84）：
+//   - BuildBedrockMessages：连续多条 role=tool 合并为一条 user，content 为多个 toolResult，
+//     避免 "toolResult blocks 数量超过 toolUse" 的 ValidationException。
+//   - 流式 tool_calls：首个 chunk 带 role "assistant"，index 为 0-based；finish_reason 映射 tool_use -> tool_calls。
+//   - 路由层：model 为空或 "gpt-*" 时使用默认模型（与 gateway 的 gpt- -> DEFAULT_MODEL 一致）。
 package bedrockproxy
 
 import (
@@ -388,15 +395,32 @@ func (s *Service) ConverseStream(
 	return result, nil
 }
 
+// BuildBedrockMessages 将 OpenAI 格式的 messages 转为 Bedrock Converse 格式。
+// 与 bedrock-access-gateway 的 _parse_messages + _reframe_multi_payloard 对齐：
+// - 连续多条 role=tool 合并为一条 user 消息，content 为多个 toolResult，避免 "toolResult blocks 数量超过 toolUse" 的 ValidationException。
 func BuildBedrockMessages(messages []openai.ChatMessage) ([]brtypes.Message, []brtypes.SystemContentBlock, error) {
 	outMessages := make([]brtypes.Message, 0, len(messages))
 	outSystem := make([]brtypes.SystemContentBlock, 0, 2)
+
+	// 用于收集连续的 tool 消息，合并为一条 user 消息（与 bedrock-access-gateway 一致）
+	var pendingToolResults []brtypes.ContentBlock
+
+	flushToolResults := func() {
+		if len(pendingToolResults) > 0 {
+			outMessages = append(outMessages, brtypes.Message{
+				Role:    brtypes.ConversationRoleUser,
+				Content: pendingToolResults,
+			})
+			pendingToolResults = nil
+		}
+	}
 
 	for index, message := range messages {
 		role := strings.ToLower(strings.TrimSpace(message.Role))
 
 		switch role {
 		case "system", "developer":
+			flushToolResults() // 先刷新待处理的 tool results
 			text, err := openai.DecodeContentAsText(message.Content)
 			if err != nil {
 				return nil, nil, fmt.Errorf("invalid %s message content at index %d: %w", role, index, err)
@@ -407,6 +431,7 @@ func BuildBedrockMessages(messages []openai.ChatMessage) ([]brtypes.Message, []b
 			outSystem = append(outSystem, &brtypes.SystemContentBlockMemberText{Value: text})
 
 		case "assistant":
+			flushToolResults() // 先刷新待处理的 tool results
 			blocks, err := buildAssistantContentBlocks(message)
 			if err != nil {
 				return nil, nil, fmt.Errorf("invalid assistant message at index %d: %w", index, err)
@@ -420,16 +445,15 @@ func BuildBedrockMessages(messages []openai.ChatMessage) ([]brtypes.Message, []b
 			})
 
 		case "tool":
+			// 收集 tool 消息，稍后合并到一个 user 消息中
 			toolResult, err := buildToolResultContentBlock(message)
 			if err != nil {
 				return nil, nil, fmt.Errorf("invalid tool message at index %d: %w", index, err)
 			}
-			outMessages = append(outMessages, brtypes.Message{
-				Role:    brtypes.ConversationRoleUser,
-				Content: []brtypes.ContentBlock{toolResult},
-			})
+			pendingToolResults = append(pendingToolResults, toolResult)
 
 		case "", "user", "function":
+			flushToolResults() // 先刷新待处理的 tool results
 			text, err := openai.DecodeContentAsText(message.Content)
 			if err != nil {
 				return nil, nil, fmt.Errorf("invalid user message content at index %d: %w", index, err)
@@ -446,6 +470,9 @@ func BuildBedrockMessages(messages []openai.ChatMessage) ([]brtypes.Message, []b
 			// Keep compatibility by ignoring unknown roles instead of failing hard.
 		}
 	}
+
+	// 刷新最后的 tool results
+	flushToolResults()
 
 	if len(outMessages) == 0 {
 		return nil, nil, errors.New("at least one non-system message is required")

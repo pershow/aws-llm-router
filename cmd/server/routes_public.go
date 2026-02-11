@@ -154,9 +154,20 @@ func (a *App) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cursor 修复（对齐 bedrock-access-gateway）：model 为空或 "gpt-*" 时使用默认模型
+	if request.Model == "" || strings.HasPrefix(strings.ToLower(strings.TrimSpace(request.Model)), "gpt-") {
+		request.Model = ""
+	}
+
 	// 关键调试日志：打印请求中的工具信息
 	a.logger.Printf("========== 请求处理开始 ==========")
 	a.logger.Printf("模型: %s, 流式: %v, 工具数量: %d", request.Model, request.Stream, len(request.Tools))
+	
+	// 打印原始请求 JSON（用于调试）
+	if rawJSON, err := json.Marshal(request); err == nil {
+		a.logger.Printf("原始请求 JSON (前 2000 字符): %s", truncateRunes(string(rawJSON), 2000))
+	}
+	
 	if len(request.Tools) > 0 {
 		toolNames := make([]string, 0, len(request.Tools))
 		for i, tool := range request.Tools {
@@ -367,6 +378,10 @@ func (a *App) handleResponsesCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	// Cursor 修复（对齐 bedrock-access-gateway）：空或 gpt-* 时使用默认模型
+	if chatRequest.Model == "" || strings.HasPrefix(strings.ToLower(strings.TrimSpace(chatRequest.Model)), "gpt-") {
+		chatRequest.Model = ""
 	}
 
 	resolvedModel, bedrockModelID, err := a.proxy.ResolveModel(chatRequest.Model)
