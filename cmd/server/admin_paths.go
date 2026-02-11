@@ -2,19 +2,17 @@ package main
 
 import "strings"
 
-const adminBasePath = "/backendSalsSavvyLLMRouter"
-
 func adminStaticPath() string {
-	return adminBasePath + "/"
+	return "/admin/"
 }
 
 func adminAPIPath(path string) string {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" || trimmed == "/" {
-		return adminBasePath
+		return "/admin"
 	}
 	if !strings.HasPrefix(trimmed, "/") {
 		trimmed = "/" + trimmed
 	}
-	return adminBasePath + trimmed
+	return trimmed
 }

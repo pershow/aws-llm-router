@@ -175,9 +175,8 @@ func main() {
 	mux := http.NewServeMux()
 	registerPublicRoutes(mux, app)
 	registerAdminRoutes(mux, app)
-	// Admin 前端静态资源：原路径 + 带 /llmrouter 前缀的路径
+	// Admin 前端静态资源
 	mux.Handle(adminStaticPath(), app.adminStatic)
-	mux.Handle("/llmrouter"+adminStaticPath(), app.adminStatic)
 
 	// 应用中间件：调试中间件 -> 日志中间件 -> 路由
 	handler := loggingMiddleware(logger, mux)

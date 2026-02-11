@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
   adminToken: localStorage.getItem("adminToken") || "",
   config: null,
   calls: {
