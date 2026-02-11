@@ -1,7 +1,9 @@
 package openai
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -42,11 +44,11 @@ func FixMissingToolResponses(messages []ChatMessage) []ChatMessage {
 			continue
 		}
 
-		// Get tool_call IDs
-		toolCallIDs := make(map[string]bool)
+		// Get tool_call IDs.
+		toolCallIDs := make(map[string]struct{}, len(msg.ToolCalls))
 		for _, tc := range msg.ToolCalls {
-			if tc.ID != "" {
-				toolCallIDs[tc.ID] = true
+			if id := strings.TrimSpace(tc.ID); id != "" {
+				toolCallIDs[id] = struct{}{}
 			}
 		}
 
@@ -54,30 +56,113 @@ func FixMissingToolResponses(messages []ChatMessage) []ChatMessage {
 			continue
 		}
 
-		// Check if next message has tool responses
-		hasToolResponse := false
-		if i+1 < len(messages) {
-			nextMsg := messages[i+1]
-			if nextMsg.Role == "tool" && nextMsg.ToolCallID != "" {
-				if toolCallIDs[nextMsg.ToolCallID] {
-					hasToolResponse = true
-				}
+		// Scan subsequent non-assistant messages for tool responses.
+		for j := i + 1; j < len(messages) && len(toolCallIDs) > 0; j++ {
+			nextMsg := messages[j]
+			if strings.EqualFold(strings.TrimSpace(nextMsg.Role), "assistant") {
+				break
+			}
+			for _, toolCallID := range extractToolResponseIDs(nextMsg) {
+				delete(toolCallIDs, toolCallID)
 			}
 		}
 
-		// If no tool response found, insert empty responses
-		if !hasToolResponse {
+		// If some tool responses are missing, insert empty responses for the missing IDs only.
+		if len(toolCallIDs) > 0 {
 			for _, tc := range msg.ToolCalls {
-				if tc.ID != "" {
-					newMessages = append(newMessages, ChatMessage{
-						Role:       "tool",
-						ToolCallID: tc.ID,
-						Content:    []byte(`""`), // Empty string as JSON
-					})
+				toolCallID := strings.TrimSpace(tc.ID)
+				if toolCallID == "" {
+					continue
 				}
+				if _, exists := toolCallIDs[toolCallID]; !exists {
+					continue
+				}
+				newMessages = append(newMessages, ChatMessage{
+					Role:       "tool",
+					ToolCallID: toolCallID,
+					Content:    []byte(`""`), // Empty string as JSON
+				})
 			}
 		}
 	}
 
 	return newMessages
+}
+
+func extractToolResponseIDs(message ChatMessage) []string {
+	ids := make([]string, 0, 2)
+
+	if strings.EqualFold(strings.TrimSpace(message.Role), "tool") {
+		if toolCallID := strings.TrimSpace(message.ToolCallID); toolCallID != "" {
+			ids = append(ids, toolCallID)
+		}
+	}
+
+	return appendUniqueToolCallIDs(ids, extractInlineToolResultIDs(message.Content))
+}
+
+func extractInlineToolResultIDs(raw json.RawMessage) []string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+
+	switch trimmed[0] {
+	case '[':
+		var entries []json.RawMessage
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return nil
+		}
+		ids := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			ids = appendUniqueToolCallIDs(ids, extractInlineToolResultIDs(entry))
+		}
+		return ids
+	case '{':
+		var item map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return nil
+		}
+		itemType := strings.ToLower(strings.TrimSpace(jsonString(item["type"])))
+		if itemType != "tool_result" && itemType != "function_call_output" && itemType != "function_result" {
+			return nil
+		}
+
+		toolCallID := strings.TrimSpace(jsonString(item["tool_use_id"]))
+		if toolCallID == "" {
+			toolCallID = strings.TrimSpace(jsonString(item["tool_call_id"]))
+		}
+		if toolCallID == "" {
+			toolCallID = strings.TrimSpace(jsonString(item["call_id"]))
+		}
+		if toolCallID == "" {
+			toolCallID = strings.TrimSpace(jsonString(item["id"]))
+		}
+		if toolCallID == "" {
+			return nil
+		}
+		return []string{toolCallID}
+	default:
+		return nil
+	}
+}
+
+func appendUniqueToolCallIDs(dst []string, ids []string) []string {
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range dst {
+			if existing == id {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			dst = append(dst, id)
+		}
+	}
+	return dst
 }

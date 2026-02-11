@@ -186,6 +186,103 @@ func TestExtractOutputPayloadWithToolCalls(t *testing.T) {
 	assertJSONEqual(t, toolCall.Function.Arguments, `{"query":"mcp"}`)
 }
 
+func TestBuildBedrockMessagesWithInlineToolResultContent(t *testing.T) {
+	messages := []openai.ChatMessage{
+		{
+			Role:    "user",
+			Content: json.RawMessage(`"read src/main.ts"`),
+		},
+		{
+			Role:    "assistant",
+			Content: json.RawMessage(`null`),
+			ToolCalls: []openai.ToolCall{
+				{
+					ID:   "call_1",
+					Type: "function",
+					Function: openai.ToolCallFunction{
+						Name:      "Read",
+						Arguments: `{"path":"src/main.ts"}`,
+					},
+				},
+			},
+		},
+		{
+			Role: "user",
+			Content: json.RawMessage(`[
+				{"type":"tool_result","tool_use_id":"call_1","content":"package main"}
+			]`),
+		},
+	}
+
+	outMessages, _, err := BuildBedrockMessages(messages)
+	if err != nil {
+		t.Fatalf("BuildBedrockMessages returned error: %v", err)
+	}
+	if len(outMessages) != 3 {
+		t.Fatalf("expected 3 output messages, got %d", len(outMessages))
+	}
+
+	toolResultMsg := outMessages[2]
+	if toolResultMsg.Role != brtypes.ConversationRoleUser {
+		t.Fatalf("expected inline tool result mapped to user role, got %v", toolResultMsg.Role)
+	}
+	if len(toolResultMsg.Content) != 1 {
+		t.Fatalf("expected one tool result block, got %d", len(toolResultMsg.Content))
+	}
+	resultBlock, ok := toolResultMsg.Content[0].(*brtypes.ContentBlockMemberToolResult)
+	if !ok {
+		t.Fatalf("expected tool result block, got %T", toolResultMsg.Content[0])
+	}
+	if aws.ToString(resultBlock.Value.ToolUseId) != "call_1" {
+		t.Fatalf("unexpected tool result id: %s", aws.ToString(resultBlock.Value.ToolUseId))
+	}
+	if len(resultBlock.Value.Content) != 1 {
+		t.Fatalf("expected one inner tool result content block, got %d", len(resultBlock.Value.Content))
+	}
+	textBlock, ok := resultBlock.Value.Content[0].(*brtypes.ToolResultContentBlockMemberText)
+	if !ok {
+		t.Fatalf("expected text tool result content, got %T", resultBlock.Value.Content[0])
+	}
+	if textBlock.Value != "package main" {
+		t.Fatalf("unexpected tool result text: %q", textBlock.Value)
+	}
+}
+
+func TestBuildBedrockMessagesWithFunctionCallOutputContent(t *testing.T) {
+	messages := []openai.ChatMessage{
+		{
+			Role: "user",
+			Content: json.RawMessage(`[
+				{"type":"function_call_output","call_id":"call_2","output":{"ok":true}}
+			]`),
+		},
+	}
+
+	outMessages, _, err := BuildBedrockMessages(messages)
+	if err != nil {
+		t.Fatalf("BuildBedrockMessages returned error: %v", err)
+	}
+	if len(outMessages) != 1 {
+		t.Fatalf("expected one output message, got %d", len(outMessages))
+	}
+	if len(outMessages[0].Content) != 1 {
+		t.Fatalf("expected one content block, got %d", len(outMessages[0].Content))
+	}
+	resultBlock, ok := outMessages[0].Content[0].(*brtypes.ContentBlockMemberToolResult)
+	if !ok {
+		t.Fatalf("expected tool result block, got %T", outMessages[0].Content[0])
+	}
+	if aws.ToString(resultBlock.Value.ToolUseId) != "call_2" {
+		t.Fatalf("unexpected tool result id: %s", aws.ToString(resultBlock.Value.ToolUseId))
+	}
+	if len(resultBlock.Value.Content) != 1 {
+		t.Fatalf("expected one inner tool result content block, got %d", len(resultBlock.Value.Content))
+	}
+	if _, ok := resultBlock.Value.Content[0].(*brtypes.ToolResultContentBlockMemberJson); !ok {
+		t.Fatalf("expected JSON tool result content, got %T", resultBlock.Value.Content[0])
+	}
+}
+
 func assertJSONEqual(t *testing.T, got, want string) {
 	t.Helper()
 

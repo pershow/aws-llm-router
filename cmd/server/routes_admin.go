@@ -2,9 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"math"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -70,6 +76,12 @@ type adminCallRow struct {
 	CostAmount float64 `json:"cost_amount"`
 }
 
+type adminDebugLogFile struct {
+	Name      string `json:"name"`
+	SizeBytes int64  `json:"size_bytes"`
+	Modified  string `json:"modified_at"`
+}
+
 func registerAdminRoutes(mux *http.ServeMux, app *App) {
 	// 原始后台接口路径
 	mux.HandleFunc(adminAPIPath("/config"), app.requireAdmin(app.handleAdminConfig))
@@ -82,6 +94,8 @@ func registerAdminRoutes(mux *http.ServeMux, app *App) {
 	mux.HandleFunc(adminAPIPath("/config/clients"), app.requireAdmin(app.handleAdminClients))
 	mux.HandleFunc(adminAPIPath("/usage"), app.requireAdmin(app.handleAdminUsage))
 	mux.HandleFunc(adminAPIPath("/calls"), app.requireAdmin(app.handleAdminCalls))
+	mux.HandleFunc(adminAPIPath("/logs"), app.requireAdmin(app.handleAdminDebugLogs))
+	mux.HandleFunc(adminAPIPath("/logs/download"), app.requireAdmin(app.handleAdminDebugLogDownload))
 }
 
 func (a *App) handleAdminConfig(w http.ResponseWriter, r *http.Request) {
@@ -510,6 +524,160 @@ func (a *App) handleAdminCalls(w http.ResponseWriter, r *http.Request) {
 		"has_prev":    page > 1,
 		"has_next":    page < totalPages,
 	})
+}
+
+func (a *App) handleAdminDebugLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAdminError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	logDir := debugLogDirFromEnv()
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"enabled": strings.EqualFold(strings.TrimSpace(os.Getenv("DEBUG_REQUESTS")), "true"),
+				"log_dir": logDir,
+				"items":   []adminDebugLogFile{},
+			})
+			return
+		}
+		writeAdminError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	items := make([]adminDebugLogFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name())
+		if !isDebugLogFilename(name) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		items = append(items, adminDebugLogFile{
+			Name:      name,
+			SizeBytes: info.Size(),
+			Modified:  info.ModTime().UTC().Format(time.RFC3339),
+		})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Modified == items[j].Modified {
+			return items[i].Name > items[j].Name
+		}
+		return items[i].Modified > items[j].Modified
+	})
+
+	limit := parseLimit(r.URL.Query().Get("limit"), 100, 1000)
+	if len(items) > limit {
+		items = items[:limit]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled": strings.EqualFold(strings.TrimSpace(os.Getenv("DEBUG_REQUESTS")), "true"),
+		"log_dir": logDir,
+		"items":   items,
+	})
+}
+
+func (a *App) handleAdminDebugLogDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAdminError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	filePath, err := resolveDebugLogFilePath(debugLogDirFromEnv(), name)
+	if err != nil {
+		writeAdminError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeAdminError(w, http.StatusNotFound, "log file not found")
+			return
+		}
+		writeAdminError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		writeAdminError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !info.Mode().IsRegular() {
+		writeAdminError(w, http.StatusBadRequest, "invalid log file")
+		return
+	}
+
+	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "application/octet-stream"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, file)
+}
+
+func debugLogDirFromEnv() string {
+	logDir := strings.TrimSpace(os.Getenv("DEBUG_LOG_DIR"))
+	if logDir == "" {
+		return "./debug_logs"
+	}
+	return logDir
+}
+
+func isDebugLogFilename(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".json", ".txt", ".log":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveDebugLogFilePath(logDir string, filename string) (string, error) {
+	filename = strings.TrimSpace(filename)
+	if !isDebugLogFilename(filename) {
+		return "", errors.New("invalid log file name")
+	}
+
+	baseAbs, err := filepath.Abs(logDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve log dir failed: %w", err)
+	}
+	targetAbs, err := filepath.Abs(filepath.Join(baseAbs, filename))
+	if err != nil {
+		return "", fmt.Errorf("resolve log file failed: %w", err)
+	}
+	rel, err := filepath.Rel(baseAbs, targetAbs)
+	if err != nil {
+		return "", fmt.Errorf("validate log file path failed: %w", err)
+	}
+	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", errors.New("invalid log file path")
+	}
+	return targetAbs, nil
 }
 
 func (a *App) buildAdminConfigResponse(ctx context.Context) (adminConfigResponse, error) {

@@ -150,8 +150,21 @@ func hasToolResponses(messages []openai.ChatMessage) bool {
 		if role == "tool" {
 			return true
 		}
+		// If previous assistant tool calls already exist in history, we should
+		// stop forcing required tool-use to avoid repeated tool loops.
+		if len(msg.ToolCalls) > 0 {
+			return true
+		}
+		if hasInlineToolResultMessage(msg.Content) {
+			return true
+		}
 	}
 	return false
+}
+
+func hasInlineToolResultMessage(raw json.RawMessage) bool {
+	blocks, err := buildInlineToolResultBlocks(raw)
+	return err == nil && len(blocks) > 0
 }
 
 func (s *Service) Converse(ctx context.Context, request openai.ChatCompletionRequest, bedrockModelID string) (ChatResult, error) {
@@ -510,12 +523,24 @@ func BuildBedrockMessages(messages []openai.ChatMessage) ([]brtypes.Message, []b
 			if err != nil {
 				return nil, nil, fmt.Errorf("invalid user message content at index %d: %w", index, err)
 			}
-			if strings.TrimSpace(text) == "" {
+
+			blocks := make([]brtypes.ContentBlock, 0, 2)
+			if strings.TrimSpace(text) != "" {
+				blocks = append(blocks, &brtypes.ContentBlockMemberText{Value: text})
+			}
+
+			inlineToolResults, err := buildInlineToolResultBlocks(message.Content)
+			if err != nil {
+				return nil, nil, fmt.Errorf("invalid inline tool result content at index %d: %w", index, err)
+			}
+			blocks = append(blocks, inlineToolResults...)
+			if len(blocks) == 0 {
 				continue
 			}
+
 			outMessages = append(outMessages, brtypes.Message{
 				Role:    brtypes.ConversationRoleUser,
-				Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: text}},
+				Content: blocks,
 			})
 
 		default:
@@ -649,6 +674,115 @@ func parseToolResultContent(raw json.RawMessage) ([]brtypes.ToolResultContentBlo
 	}
 }
 
+func buildInlineToolResultBlocks(raw json.RawMessage) ([]brtypes.ContentBlock, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+
+	switch trimmed[0] {
+	case '[':
+		var entries []json.RawMessage
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return nil, nil
+		}
+
+		blocks := make([]brtypes.ContentBlock, 0, len(entries))
+		for _, entry := range entries {
+			block, ok, err := parseInlineToolResultBlock(entry)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				blocks = append(blocks, block)
+			}
+		}
+		return blocks, nil
+	case '{':
+		block, ok, err := parseInlineToolResultBlock(raw)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, nil
+		}
+		return []brtypes.ContentBlock{block}, nil
+	default:
+		return nil, nil
+	}
+}
+
+func parseInlineToolResultBlock(raw json.RawMessage) (brtypes.ContentBlock, bool, error) {
+	var item map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return nil, false, nil
+	}
+
+	itemType := strings.ToLower(strings.TrimSpace(rawJSONFieldString(item, "type")))
+	if itemType != "tool_result" && itemType != "function_call_output" && itemType != "function_result" {
+		return nil, false, nil
+	}
+
+	toolUseID := strings.TrimSpace(rawJSONFieldString(item, "tool_use_id"))
+	if toolUseID == "" {
+		toolUseID = strings.TrimSpace(rawJSONFieldString(item, "tool_call_id"))
+	}
+	if toolUseID == "" {
+		toolUseID = strings.TrimSpace(rawJSONFieldString(item, "call_id"))
+	}
+	if toolUseID == "" {
+		toolUseID = strings.TrimSpace(rawJSONFieldString(item, "id"))
+	}
+	if toolUseID == "" {
+		return nil, false, nil
+	}
+
+	payloadRaw := item["content"]
+	if itemType == "function_call_output" || itemType == "function_result" {
+		payloadRaw = item["output"]
+	}
+	if len(strings.TrimSpace(string(payloadRaw))) == 0 {
+		payloadRaw = item["output"]
+	}
+	if len(strings.TrimSpace(string(payloadRaw))) == 0 {
+		payloadRaw = json.RawMessage(`""`)
+	}
+
+	resultContent, err := parseToolResultContent(payloadRaw)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(resultContent) == 0 {
+		resultContent = []brtypes.ToolResultContentBlock{
+			&brtypes.ToolResultContentBlockMemberText{Value: ""},
+		}
+	}
+
+	return &brtypes.ContentBlockMemberToolResult{
+		Value: brtypes.ToolResultBlock{
+			ToolUseId: aws.String(toolUseID),
+			Content:   resultContent,
+		},
+	}, true, nil
+}
+
+func rawJSONFieldString(item map[string]json.RawMessage, key string) string {
+	raw, ok := item[key]
+	if !ok {
+		return ""
+	}
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var out string
+	if err := json.Unmarshal(raw, &out); err == nil {
+		return out
+	}
+	return string(raw)
+}
+
 func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, forceToolUse bool) (*brtypes.ToolConfiguration, error) {
 	// 调试日志：打印输入参数
 	fmt.Printf("[DEBUG buildToolConfiguration] 输入: tools=%d, rawToolChoice=%s, forceToolUse=%v\n",
@@ -659,12 +793,12 @@ func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, 
 	for i, item := range tools {
 		// 使用 GetFunction() 方法获取函数定义，支持两种格式
 		function := item.GetFunction()
-		
+
 		// 详细调试：打印每个工具的原始信息
-		fmt.Printf("[DEBUG buildToolConfiguration] 工具 %d: type=%q, function=%v, name=%q\n", 
+		fmt.Printf("[DEBUG buildToolConfiguration] 工具 %d: type=%q, function=%v, name=%q\n",
 			i, item.Type, function != nil, item.Name)
 		if function != nil {
-			fmt.Printf("[DEBUG buildToolConfiguration] 工具 %d function: name=%q, desc=%q\n", 
+			fmt.Printf("[DEBUG buildToolConfiguration] 工具 %d function: name=%q, desc=%q\n",
 				i, function.Name, function.Description)
 		}
 
@@ -673,7 +807,7 @@ func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, 
 			toolType = "function"
 		}
 		if toolType != "function" || function == nil {
-			fmt.Printf("[DEBUG buildToolConfiguration] 跳过工具 %d: type=%q (期望 function), function=%v\n", 
+			fmt.Printf("[DEBUG buildToolConfiguration] 跳过工具 %d: type=%q (期望 function), function=%v\n",
 				i, toolType, function != nil)
 			continue
 		}

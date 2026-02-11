@@ -7,6 +7,9 @@ const state = {
     total: 0,
     totalPages: 1,
   },
+  logs: {
+    limit: 100,
+  },
 };
 
 const el = {
@@ -70,6 +73,10 @@ const el = {
   callsBody: document.getElementById("callsBody"),
   btnCallsPrev: document.getElementById("btnCallsPrev"),
   btnCallsNext: document.getElementById("btnCallsNext"),
+  logsStatus: document.getElementById("logsStatus"),
+  logsLimit: document.getElementById("logsLimit"),
+  logsBody: document.getElementById("logsBody"),
+  btnLogs: document.getElementById("btnLogs"),
 
   btnReload: document.getElementById("btnReload"),
   btnUsage: document.getElementById("btnUsage"),
@@ -124,6 +131,12 @@ function setBillingStatus(message, isError = false) {
 function setAdminTokenStatus(message, isError = false) {
   el.adminTokenStatus.textContent = message;
   el.adminTokenStatus.style.color = isError ? "#b91c1c" : "#526277";
+}
+
+function setLogsStatus(message, isError = false) {
+  if (!el.logsStatus) return;
+  el.logsStatus.textContent = message;
+  el.logsStatus.style.color = isError ? "#b91c1c" : "#526277";
 }
 
 function showLogin() {
@@ -269,6 +282,19 @@ function formatUSD(value) {
     minimumFractionDigits: 6,
     maximumFractionDigits: 9,
   });
+}
+
+function formatBytes(value) {
+  const size = Number(value || 0);
+  if (!Number.isFinite(size) || size <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let current = size;
+  let idx = 0;
+  while (current >= 1024 && idx < units.length - 1) {
+    current /= 1024;
+    idx += 1;
+  }
+  return `${current.toFixed(idx === 0 ? 0 : 2)} ${units[idx]}`;
 }
 
 function parsePositiveInt(value, fallback) {
@@ -715,6 +741,64 @@ function renderCalls(items, totalCost, pagination) {
   );
 }
 
+async function downloadDebugLog(name) {
+  const response = await fetch(apiPath(`/logs/download?name=${encodeURIComponent(name)}`), {
+    method: "GET",
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    const contentType = response.headers.get("content-type") || "";
+    let message = `HTTP ${response.status}`;
+    if (contentType.includes("application/json")) {
+      const body = await response.json();
+      message = body.error || body?.error?.message || message;
+    } else {
+      message = (await response.text()) || message;
+    }
+    throw new Error(message);
+  }
+
+  const blob = await response.blob();
+  const blobURL = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = blobURL;
+  link.download = String(name || "debug-log.txt");
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(blobURL);
+}
+
+function renderLogs(items, enabled, logDir) {
+  if (!el.logsBody) return;
+  el.logsBody.innerHTML = "";
+
+  for (const item of items || []) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><code>${escapeHTML(item.name || "")}</code></td>
+      <td>${escapeHTML(formatBytes(item.size_bytes))}</td>
+      <td>${escapeHTML(item.modified_at || "")}</td>
+      <td><button class="ghost" type="button">Download</button></td>
+    `;
+    const button = tr.querySelector("button");
+    button.addEventListener("click", async () => {
+      try {
+        await downloadDebugLog(item.name || "");
+        setStatus(`Downloaded: ${item.name}`);
+      } catch (error) {
+        setLogsStatus(error.message, true);
+      }
+    });
+    el.logsBody.appendChild(tr);
+  }
+
+  const total = Number((items || []).length);
+  const enabledText = enabled ? "enabled" : "disabled";
+  const dirText = String(logDir || "./debug_logs");
+  setLogsStatus(`Debug logging is ${enabledText}. Directory: ${dirText}. Files: ${formatNumber(total)}.`);
+}
+
 function renderAWSConfig(awsConfig, bedrockClientReady) {
   const aws = awsConfig || {};
   el.awsRegion.value = aws.region || "";
@@ -783,6 +867,16 @@ async function loadCalls(pageOverride) {
   renderCalls(data.items || [], Number(data.total_cost || 0), data);
 }
 
+async function loadLogs() {
+  if (!el.logsBody || !el.logsLimit) return;
+  const limit = parsePositiveInt(el.logsLimit.value, state.logs.limit || 100);
+  state.logs.limit = limit;
+  el.logsLimit.value = String(limit);
+
+  const data = await request(apiPath(`/logs?limit=${encodeURIComponent(String(limit))}`));
+  renderLogs(data.items || [], Boolean(data.enabled), data.log_dir || "./debug_logs");
+}
+
 function parseAllowedModels(value) {
   return normalizeStrings(
     value
@@ -806,6 +900,7 @@ async function connect() {
     await loadConfig();
     await loadUsage();
     await loadCalls(1);
+    await loadLogs();
     setLoginStatus("", false);
     setAdminTokenStatus("");
     showApp();
@@ -862,6 +957,7 @@ async function init() {
       await loadConfig();
       await loadUsage();
       await loadCalls();
+      await loadLogs();
       setStatus("Reloaded.");
     } catch (error) {
       setStatus(error.message, true);
@@ -1062,6 +1158,16 @@ async function init() {
     }
   });
 
+  if (el.btnLogs) {
+    el.btnLogs.addEventListener("click", async () => {
+      try {
+        await loadLogs();
+      } catch (error) {
+        setLogsStatus(error.message, true);
+      }
+    });
+  }
+
   el.callsPage.addEventListener("keydown", async (event) => {
     if (event.key !== "Enter") {
       return;
@@ -1104,5 +1210,4 @@ async function init() {
 }
 
 init();
-
 

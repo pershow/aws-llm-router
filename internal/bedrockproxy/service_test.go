@@ -1,6 +1,11 @@
 package bedrockproxy
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+
+	"aws-cursor-router/internal/openai"
+)
 
 func TestResolveModelDirect(t *testing.T) {
 	service := NewService(nil, "anthropic.default", map[string]string{
@@ -28,5 +33,43 @@ func TestResolveModelDefault(t *testing.T) {
 	}
 	if requested != "default" || bedrockID != "anthropic.default" {
 		t.Fatalf("unexpected model resolution: %s %s", requested, bedrockID)
+	}
+}
+
+func TestHasToolResponsesDetectsAssistantToolCalls(t *testing.T) {
+	messages := []openai.ChatMessage{
+		{
+			Role:    "assistant",
+			Content: json.RawMessage(`null`),
+			ToolCalls: []openai.ToolCall{
+				{
+					ID:   "call_1",
+					Type: "function",
+					Function: openai.ToolCallFunction{
+						Name:      "Read",
+						Arguments: `{"path":"src/main.ts"}`,
+					},
+				},
+			},
+		},
+	}
+
+	if !hasToolResponses(messages) {
+		t.Fatalf("expected hasToolResponses=true when assistant tool_calls exist")
+	}
+}
+
+func TestHasToolResponsesDetectsInlineToolResults(t *testing.T) {
+	messages := []openai.ChatMessage{
+		{
+			Role: "user",
+			Content: json.RawMessage(`[
+				{"type":"tool_result","tool_use_id":"call_1","content":"ok"}
+			]`),
+		},
+	}
+
+	if !hasToolResponses(messages) {
+		t.Fatalf("expected hasToolResponses=true when inline tool_result exists")
 	}
 }
