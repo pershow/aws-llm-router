@@ -141,6 +141,19 @@ func (s *Service) ListModelAliases() []string {
 	return aliases
 }
 
+// hasToolResponses 判断当前对话中是否已经包含工具结果（role=tool 的消息）。
+// 如果已经有 tool 消息，则说明上一轮工具调用已经完成，后续轮次就不应该再强制模型「必须」调用工具，
+// 否则容易出现模型在每一轮都重复发起同一个工具调用的情况。
+func hasToolResponses(messages []openai.ChatMessage) bool {
+	for _, msg := range messages {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		if role == "tool" {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) Converse(ctx context.Context, request openai.ChatCompletionRequest, bedrockModelID string) (ChatResult, error) {
 	// Fix messages: ensure tool_call IDs and fix missing tool responses
 	request.Messages = openai.EnsureToolCallIDs(request.Messages)
@@ -151,8 +164,13 @@ func (s *Service) Converse(ctx context.Context, request openai.ChatCompletionReq
 		return ChatResult{}, err
 	}
 
+	// 仅在「尚未出现任何 tool 消息」时才强制工具调用。
+	// 第一轮（没有 tool 结果）可以强制 required，后续轮次一旦已有工具结果则恢复为请求里的 tool_choice（通常是 auto），
+	// 避免模型在每一轮都被迫再次调用同一个工具。
+	hasTool := hasToolResponses(request.Messages)
+
 	s.mu.RLock()
-	forceToolUse := s.forceToolUse
+	forceToolUse := s.forceToolUse && !hasTool
 	s.mu.RUnlock()
 
 	toolConfig, err := buildToolConfiguration(request.Tools, request.ToolChoice, forceToolUse)
@@ -216,8 +234,12 @@ func (s *Service) ConverseStream(
 		return ChatResult{}, err
 	}
 
+	// 同 Converse：只有在历史中还没有任何 tool 结果时才启用 FORCE_TOOL_USE，
+	// 避免模型在收到工具结果后仍被强制重复调用工具。
+	hasTool := hasToolResponses(request.Messages)
+
 	s.mu.RLock()
-	forceToolUse := s.forceToolUse
+	forceToolUse := s.forceToolUse && !hasTool
 	bufferToolCallArgs := s.bufferToolCallArgs
 	s.mu.RUnlock()
 
