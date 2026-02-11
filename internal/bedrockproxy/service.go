@@ -265,9 +265,9 @@ func (s *Service) ConverseStream(
 		case *brtypes.ConverseStreamOutputMemberMessageStart:
 			if !roleSent {
 				roleSent = true
-				if err := onDelta(StreamDelta{Role: string(value.Value.Role)}); err != nil {
-					return ChatResult{}, err
-				}
+				// 注意：对于 tool_calls，我们不在这里发送 role，而是在 ContentBlockStart 中一起发送
+				// 这样可以确保第一个 tool_call chunk 包含 role
+				// 只有纯文本响应才在这里发送 role
 			}
 		case *brtypes.ConverseStreamOutputMemberContentBlockStart:
 			blockIndex := int(ptrInt32(value.Value.ContentBlockIndex))
@@ -287,7 +287,7 @@ func (s *Service) ConverseStream(
 			}
 
 			// 调试日志：工具调用开始
-			fmt.Printf("[DEBUG ConverseStream] 🔧 工具调用开始: index=%d, id=%s, name=%s\n", toolCallIndex, toolCallID, toolName)
+			fmt.Printf("[DEBUG ConverseStream] 🔧 工具调用开始: index=%d, id=%s, name=%s, roleSent=%v\n", toolCallIndex, toolCallID, toolName, roleSent)
 
 			toolCalls = append(toolCalls, openai.ToolCall{
 				ID:   toolCallID,
@@ -298,8 +298,9 @@ func (s *Service) ConverseStream(
 			})
 			toolCallIndexByContentBlock[blockIndex] = toolCallIndex
 
-			// 根据 OpenAI 规范，第一个 tool_call chunk 需要同时包含 role 和 tool_calls
+			// 根据 OpenAI 规范，第一个 tool_call chunk 必须同时包含 role: "assistant" 和 tool_calls
 			// 这样客户端（如 Cursor）才能正确解析流式 tool_calls
+			// 注意：即使之前收到了 MessageStart，第一个 tool_call 也必须带 role
 			delta := StreamDelta{
 				ToolCalls: []openai.ChatChunkToolCall{{
 					Index: toolCallIndex,
@@ -310,10 +311,11 @@ func (s *Service) ConverseStream(
 					},
 				}},
 			}
-			if !roleSent {
-				roleSent = true
+			// 第一个 tool_call 必须带 role，无论之前是否发送过
+			if toolCallIndex == 0 {
 				delta.Role = "assistant"
 			}
+			roleSent = true
 			if err := onDelta(delta); err != nil {
 				return ChatResult{}, err
 			}
