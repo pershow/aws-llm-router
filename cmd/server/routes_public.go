@@ -523,7 +523,12 @@ func (a *App) handleChatCompletionsStream(
 	statusCode := http.StatusOK
 	var responseText strings.Builder
 
-	result, err := a.proxy.ConverseStream(ctx, request, bedrockModelID, func(delta bedrockproxy.StreamDelta) error {
+	// 使用与请求断开无关的 context，避免 Cursor/代理断开时取消 Bedrock 流；
+	// 仅受 REQUEST_TIMEOUT 限制。客户端断开时会在下次 writeSSEData 失败并停止。
+	streamCtx, streamCancel := context.WithTimeout(context.Background(), a.cfg.RequestTimeout)
+	defer streamCancel()
+
+	result, err := a.proxy.ConverseStream(streamCtx, request, bedrockModelID, func(delta bedrockproxy.StreamDelta) error {
 		if delta.Role != "" {
 			if err := writeSSEData(w, openai.ChatCompletionChunk{
 				ID:      chunkID,
@@ -689,7 +694,10 @@ func (a *App) handleResponsesStream(
 	var responseText strings.Builder
 	toolStates := make(map[int]*openai.ResponsesFunctionCallState)
 
-	result, err := a.proxy.ConverseStream(ctx, chatRequest, bedrockModelID, func(delta bedrockproxy.StreamDelta) error {
+	streamCtx, streamCancel := context.WithTimeout(context.Background(), a.cfg.RequestTimeout)
+	defer streamCancel()
+
+	result, err := a.proxy.ConverseStream(streamCtx, chatRequest, bedrockModelID, func(delta bedrockproxy.StreamDelta) error {
 		if delta.Text != "" {
 			if messageOutputIndex < 0 {
 				messageOutputIndex = nextOutputIndex
