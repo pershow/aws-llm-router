@@ -654,31 +654,42 @@ func (a *App) handleResponsesStream(
 	if modelName == "default" {
 		modelName = bedrockModelID
 	}
-	responseID := "resp-" + requestID
+	responseID := "resp_" + requestID
 	createdAt := time.Now().Unix()
 	statusCode := http.StatusOK
 
-	emitEvent := func(payload any) error {
+	// sequence_number 用于标识事件顺序，从 0 开始递增
+	var seqNum int64 = 0
+	nextSeq := func() int64 {
+		n := seqNum
+		seqNum++
+		return n
+	}
+
+	emitEvent := func(payload map[string]any) error {
+		// 根据 OpenAI 规范，每个事件都需要 sequence_number
+		payload["sequence_number"] = nextSeq()
 		if err := writeSSEData(w, payload); err != nil {
 			return fmt.Errorf("stream write failed: %w", err)
 		}
 		return nil
 	}
 
-	baseResponse := openai.ResponsesCreateResponse{
-		ID:                responseID,
-		Object:            "response",
-		CreatedAt:         createdAt,
-		Status:            "in_progress",
-		Model:             modelName,
-		Output:            []openai.ResponsesOutputItem{},
-		Usage:             openai.ResponsesUsage{},
-		ParallelToolCalls: boolOrDefault(request.ParallelToolCalls, true),
-		ToolChoice:        request.ToolChoice,
-		Error:             nil,
-		IncompleteDetails: nil,
+	baseResponse := map[string]any{
+		"id":                  responseID,
+		"object":              "response",
+		"created_at":          createdAt,
+		"status":              "in_progress",
+		"model":               modelName,
+		"output":              []any{},
+		"parallel_tool_calls": boolOrDefault(request.ParallelToolCalls, true),
+		"tool_choice":         request.ToolChoice,
+		"error":               nil,
+		"incomplete_details":  nil,
+		"usage":               nil,
 	}
 
+	// response.created
 	if err := emitEvent(map[string]any{
 		"type":     "response.created",
 		"response": baseResponse,
@@ -686,6 +697,8 @@ func (a *App) handleResponsesStream(
 		statusCode = http.StatusBadGateway
 		return bedrockproxy.ChatResult{}, statusCode, err.Error()
 	}
+
+	// response.in_progress
 	if err := emitEvent(map[string]any{
 		"type":     "response.in_progress",
 		"response": baseResponse,
@@ -696,7 +709,7 @@ func (a *App) handleResponsesStream(
 
 	messageItemID := "msg_" + requestID
 	messageOutputIndex := -1
-	messageContentPartAdded := false // 跟踪是否已发送 content_part.added
+	messageContentPartAdded := false
 	nextOutputIndex := 0
 	var responseText strings.Builder
 	toolStates := make(map[int]*openai.ResponsesFunctionCallState)
@@ -709,33 +722,27 @@ func (a *App) handleResponsesStream(
 			if messageOutputIndex < 0 {
 				messageOutputIndex = nextOutputIndex
 				nextOutputIndex++
-				item := openai.ResponsesOutputItem{
-					ID:     messageItemID,
-					Type:   "message",
-					Status: "in_progress",
-					Role:   "assistant",
-					Content: []openai.ResponsesOutputContent{{
-						Type:        "output_text",
-						Text:        "",
-						Annotations: []any{},
-					}},
-				}
+				// response.output_item.added for message
 				if err := emitEvent(map[string]any{
 					"type":         "response.output_item.added",
-					"response_id":  responseID,
 					"output_index": messageOutputIndex,
-					"item":         item,
+					"item": map[string]any{
+						"id":      messageItemID,
+						"type":    "message",
+						"status":  "in_progress",
+						"role":    "assistant",
+						"content": []any{},
+					},
 				}); err != nil {
 					return err
 				}
 			}
 
-			// 根据 Open Responses 规范，在第一个文本 delta 之前发送 content_part.added
+			// response.content_part.added (只发送一次)
 			if !messageContentPartAdded {
 				messageContentPartAdded = true
 				if err := emitEvent(map[string]any{
 					"type":          "response.content_part.added",
-					"response_id":   responseID,
 					"item_id":       messageItemID,
 					"output_index":  messageOutputIndex,
 					"content_index": 0,
@@ -750,9 +757,9 @@ func (a *App) handleResponsesStream(
 			}
 
 			responseText.WriteString(delta.Text)
+			// response.output_text.delta
 			if err := emitEvent(map[string]any{
 				"type":          "response.output_text.delta",
-				"response_id":   responseID,
 				"output_index":  messageOutputIndex,
 				"item_id":       messageItemID,
 				"content_index": 0,
@@ -782,19 +789,18 @@ func (a *App) handleResponsesStream(
 				toolStates[chunk.Index] = state
 				nextOutputIndex++
 
-				item := openai.ResponsesOutputItem{
-					ID:        state.ItemID,
-					Type:      "function_call",
-					Status:    "in_progress",
-					CallID:    state.CallID,
-					Name:      state.Name,
-					Arguments: "",
-				}
+				// response.output_item.added for function_call
 				if err := emitEvent(map[string]any{
 					"type":         "response.output_item.added",
-					"response_id":  responseID,
 					"output_index": state.OutputIndex,
-					"item":         item,
+					"item": map[string]any{
+						"id":        state.ItemID,
+						"type":      "function_call",
+						"status":    "in_progress",
+						"call_id":   state.CallID,
+						"name":      state.Name,
+						"arguments": "",
+					},
 				}); err != nil {
 					return err
 				}
@@ -806,9 +812,9 @@ func (a *App) handleResponsesStream(
 				}
 				if chunk.Function.Arguments != "" {
 					state.Arguments += chunk.Function.Arguments
+					// response.function_call_arguments.delta
 					if err := emitEvent(map[string]any{
 						"type":         "response.function_call_arguments.delta",
-						"response_id":  responseID,
 						"output_index": state.OutputIndex,
 						"item_id":      state.ItemID,
 						"call_id":      state.CallID,
@@ -821,6 +827,7 @@ func (a *App) handleResponsesStream(
 		}
 		return nil
 	})
+
 	if err != nil {
 		statusCode = http.StatusBadGateway
 		errorMessage := "bedrock stream failed: " + err.Error()
@@ -828,12 +835,11 @@ func (a *App) handleResponsesStream(
 			errorMessage += " (请求被取消：请检查 Cursor/代理是否过早断开，或调大环境变量 REQUEST_TIMEOUT_SECONDS)"
 		}
 		_ = emitEvent(map[string]any{
-			"type":        "response.error",
-			"response_id": responseID,
-			"error": openai.OpenAIErrorPayload{
-				Message: errorMessage,
-				Type:    "server_error",
-				Code:    "stream_error",
+			"type": "error",
+			"error": map[string]any{
+				"message": errorMessage,
+				"type":    "server_error",
+				"code":    "stream_error",
 			},
 		})
 		_ = writeSSEDone(w)
@@ -844,13 +850,12 @@ func (a *App) handleResponsesStream(
 	outputItems := openai.BuildResponsesOutputItems(requestID, result.Text, result.ToolCalls)
 	outputText := openai.BuildResponsesOutputText(outputItems)
 
-	// 发送 output_item.done 事件 - 这是 Cursor 需要的关键事件
-	// 1. 先发送消息项的完成事件
+	// 发送完成事件
+	// 1. 消息项的完成事件
 	if messageOutputIndex >= 0 {
-		// 根据 Open Responses 规范，先发送 output_text.done
+		// response.output_text.done
 		if err := emitEvent(map[string]any{
 			"type":          "response.output_text.done",
-			"response_id":   responseID,
 			"output_index":  messageOutputIndex,
 			"item_id":       messageItemID,
 			"content_index": 0,
@@ -859,10 +864,9 @@ func (a *App) handleResponsesStream(
 			statusCode = http.StatusBadGateway
 			return result, statusCode, err.Error()
 		}
-		// 然后发送 content_part.done
+		// response.content_part.done
 		if err := emitEvent(map[string]any{
 			"type":          "response.content_part.done",
-			"response_id":   responseID,
 			"item_id":       messageItemID,
 			"output_index":  messageOutputIndex,
 			"content_index": 0,
@@ -875,20 +879,19 @@ func (a *App) handleResponsesStream(
 			statusCode = http.StatusBadGateway
 			return result, statusCode, err.Error()
 		}
-		// 最后发送 output_item.done
+		// response.output_item.done for message
 		if err := emitEvent(map[string]any{
 			"type":         "response.output_item.done",
-			"response_id":  responseID,
 			"output_index": messageOutputIndex,
-			"item": openai.ResponsesOutputItem{
-				ID:     messageItemID,
-				Type:   "message",
-				Status: "completed",
-				Role:   "assistant",
-				Content: []openai.ResponsesOutputContent{{
-					Type:        "output_text",
-					Text:        result.Text,
-					Annotations: []any{},
+			"item": map[string]any{
+				"id":     messageItemID,
+				"type":   "message",
+				"status": "completed",
+				"role":   "assistant",
+				"content": []map[string]any{{
+					"type":        "output_text",
+					"text":        result.Text,
+					"annotations": []any{},
 				}},
 			},
 		}); err != nil {
@@ -897,11 +900,11 @@ func (a *App) handleResponsesStream(
 		}
 	}
 
-	// 2. 发送工具调用项的完成事件
+	// 2. 工具调用项的完成事件
 	for _, state := range toolStates {
+		// response.function_call_arguments.done
 		if err := emitEvent(map[string]any{
 			"type":         "response.function_call_arguments.done",
-			"response_id":  responseID,
 			"output_index": state.OutputIndex,
 			"item_id":      state.ItemID,
 			"call_id":      state.CallID,
@@ -910,17 +913,17 @@ func (a *App) handleResponsesStream(
 			statusCode = http.StatusBadGateway
 			return result, statusCode, err.Error()
 		}
+		// response.output_item.done for function_call
 		if err := emitEvent(map[string]any{
 			"type":         "response.output_item.done",
-			"response_id":  responseID,
 			"output_index": state.OutputIndex,
-			"item": openai.ResponsesOutputItem{
-				ID:        state.ItemID,
-				Type:      "function_call",
-				Status:    "completed",
-				CallID:    state.CallID,
-				Name:      state.Name,
-				Arguments: state.Arguments,
+			"item": map[string]any{
+				"id":        state.ItemID,
+				"type":      "function_call",
+				"status":    "completed",
+				"call_id":   state.CallID,
+				"name":      state.Name,
+				"arguments": state.Arguments,
 			},
 		}); err != nil {
 			statusCode = http.StatusBadGateway
@@ -928,23 +931,50 @@ func (a *App) handleResponsesStream(
 		}
 	}
 
-	completedResponse := openai.ResponsesCreateResponse{
-		ID:        responseID,
-		Object:    "response",
-		CreatedAt: createdAt,
-		Status:    "completed",
-		Model:     modelName,
-		Output:    outputItems,
-		Usage: openai.ResponsesUsage{
-			InputTokens:  result.InputTokens,
-			OutputTokens: result.OutputTokens,
-			TotalTokens:  result.TotalTokens,
+	// 构建完成的 output 数组
+	completedOutput := make([]map[string]any, 0)
+	if messageOutputIndex >= 0 {
+		completedOutput = append(completedOutput, map[string]any{
+			"id":     messageItemID,
+			"type":   "message",
+			"status": "completed",
+			"role":   "assistant",
+			"content": []map[string]any{{
+				"type":        "output_text",
+				"text":        result.Text,
+				"annotations": []any{},
+			}},
+		})
+	}
+	for _, state := range toolStates {
+		completedOutput = append(completedOutput, map[string]any{
+			"id":        state.ItemID,
+			"type":      "function_call",
+			"status":    "completed",
+			"call_id":   state.CallID,
+			"name":      state.Name,
+			"arguments": state.Arguments,
+		})
+	}
+
+	// response.completed
+	completedResponse := map[string]any{
+		"id":                  responseID,
+		"object":              "response",
+		"created_at":          createdAt,
+		"status":              "completed",
+		"model":               modelName,
+		"output":              completedOutput,
+		"output_text":         outputText,
+		"parallel_tool_calls": boolOrDefault(request.ParallelToolCalls, true),
+		"tool_choice":         request.ToolChoice,
+		"error":               nil,
+		"incomplete_details":  nil,
+		"usage": map[string]any{
+			"input_tokens":  result.InputTokens,
+			"output_tokens": result.OutputTokens,
+			"total_tokens":  result.TotalTokens,
 		},
-		ParallelToolCalls: boolOrDefault(request.ParallelToolCalls, true),
-		ToolChoice:        request.ToolChoice,
-		OutputText:        outputText,
-		Error:             nil,
-		IncompleteDetails: nil,
 	}
 	if err := emitEvent(map[string]any{
 		"type":     "response.completed",
@@ -954,17 +984,7 @@ func (a *App) handleResponsesStream(
 		errorMessage := err.Error()
 		return result, statusCode, errorMessage
 	}
-	
-	// 发送 response.done 事件 - 标记整个响应完成
-	if err := emitEvent(map[string]any{
-		"type":     "response.done",
-		"response": completedResponse,
-	}); err != nil {
-		statusCode = http.StatusBadGateway
-		errorMessage := err.Error()
-		return result, statusCode, errorMessage
-	}
-	
+
 	if err := writeSSEDone(w); err != nil {
 		statusCode = http.StatusBadGateway
 		errorMessage := "stream completion failed: " + err.Error()
