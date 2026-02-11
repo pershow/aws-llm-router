@@ -349,6 +349,69 @@ func TestBuildBedrockMessagesWithToolResultTextArrayContent(t *testing.T) {
 	}
 }
 
+func TestBuildBedrockMessagesWithAssistantInlineToolUseBlocks(t *testing.T) {
+	messages := []openai.ChatMessage{
+		{
+			Role:    "user",
+			Content: json.RawMessage(`"please read files"`),
+		},
+		{
+			Role: "assistant",
+			Content: json.RawMessage(`[
+				{"type":"text","text":"Let me inspect the project."},
+				{"type":"tool_use","id":"tool_1","name":"Read","input":{"path":"README.md"}},
+				{"type":"tool_use","id":"tool_2","name":"LS","input":{"target_directory":"."}}
+			]`),
+		},
+		{
+			Role: "user",
+			Content: json.RawMessage(`[
+				{"type":"tool_result","tool_use_id":"tool_1","content":[{"type":"text","text":"ok"}]},
+				{"type":"tool_result","tool_use_id":"tool_2","content":[{"type":"text","text":"ok"}]}
+			]`),
+		},
+	}
+
+	outMessages, _, err := BuildBedrockMessages(messages)
+	if err != nil {
+		t.Fatalf("BuildBedrockMessages returned error: %v", err)
+	}
+	if len(outMessages) != 3 {
+		t.Fatalf("expected 3 output messages, got %d", len(outMessages))
+	}
+
+	assistantMsg := outMessages[1]
+	if assistantMsg.Role != brtypes.ConversationRoleAssistant {
+		t.Fatalf("expected assistant role, got %v", assistantMsg.Role)
+	}
+	if len(assistantMsg.Content) != 3 {
+		t.Fatalf("expected assistant content length 3 (text + 2 tool_use), got %d", len(assistantMsg.Content))
+	}
+
+	if _, ok := assistantMsg.Content[0].(*brtypes.ContentBlockMemberText); !ok {
+		t.Fatalf("expected first block to be text, got %T", assistantMsg.Content[0])
+	}
+	toolUse1, ok := assistantMsg.Content[1].(*brtypes.ContentBlockMemberToolUse)
+	if !ok {
+		t.Fatalf("expected second block to be tool_use, got %T", assistantMsg.Content[1])
+	}
+	toolUse2, ok := assistantMsg.Content[2].(*brtypes.ContentBlockMemberToolUse)
+	if !ok {
+		t.Fatalf("expected third block to be tool_use, got %T", assistantMsg.Content[2])
+	}
+	if aws.ToString(toolUse1.Value.ToolUseId) != "tool_1" || aws.ToString(toolUse2.Value.ToolUseId) != "tool_2" {
+		t.Fatalf("unexpected tool use ids: %q %q", aws.ToString(toolUse1.Value.ToolUseId), aws.ToString(toolUse2.Value.ToolUseId))
+	}
+
+	toolResultMsg := outMessages[2]
+	if toolResultMsg.Role != brtypes.ConversationRoleUser {
+		t.Fatalf("expected tool result message role user, got %v", toolResultMsg.Role)
+	}
+	if len(toolResultMsg.Content) != 2 {
+		t.Fatalf("expected 2 tool_result blocks, got %d", len(toolResultMsg.Content))
+	}
+}
+
 func assertJSONEqual(t *testing.T, got, want string) {
 	t.Helper()
 

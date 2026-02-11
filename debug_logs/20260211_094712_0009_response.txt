@@ -1,7 +1,0 @@
-{
-  "error": {
-    "message": "bedrock stream failed: operation error Bedrock Runtime: ConverseStream, https response error StatusCode: 400, RequestID: 732e0124-e494-42cd-9ae0-c8ff3480c86d, ValidationException: The format of the value at messages.2.content.0.toolResult.content.0.json is invalid. Provide a json object for the field and try again.",
-    "type": "invalid_request_error",
-    "code": "502"
-  }
-}

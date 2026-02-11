@@ -574,6 +574,16 @@ func buildAssistantContentBlocks(message openai.ChatMessage) ([]brtypes.ContentB
 		return nil, err
 	}
 	blocks = append(blocks, toolUseBlocks...)
+
+	// Cursor/Anthropic style may place tool_use blocks directly in assistant content.
+	// Parse them when standard OpenAI tool_calls are not present.
+	if len(message.ToolCalls) == 0 {
+		inlineToolUseBlocks, err := buildInlineAssistantToolUseBlocks(message.Content)
+		if err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, inlineToolUseBlocks...)
+	}
 	return blocks, nil
 }
 
@@ -621,6 +631,140 @@ func buildToolUseBlocks(toolCalls []openai.ToolCall) ([]brtypes.ContentBlock, er
 	}
 
 	return blocks, nil
+}
+
+func buildInlineAssistantToolUseBlocks(raw json.RawMessage) ([]brtypes.ContentBlock, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+
+	switch trimmed[0] {
+	case '[':
+		var entries []json.RawMessage
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return nil, nil
+		}
+
+		blocks := make([]brtypes.ContentBlock, 0, len(entries))
+		for _, entry := range entries {
+			block, ok, err := parseInlineAssistantToolUseBlock(entry)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				blocks = append(blocks, block)
+			}
+		}
+		return blocks, nil
+	case '{':
+		block, ok, err := parseInlineAssistantToolUseBlock(raw)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, nil
+		}
+		return []brtypes.ContentBlock{block}, nil
+	default:
+		return nil, nil
+	}
+}
+
+func parseInlineAssistantToolUseBlock(raw json.RawMessage) (brtypes.ContentBlock, bool, error) {
+	var item map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return nil, false, nil
+	}
+
+	itemType := strings.ToLower(strings.TrimSpace(rawJSONFieldString(item, "type")))
+	if itemType != "tool_use" && itemType != "function_call" {
+		return nil, false, nil
+	}
+
+	toolUseID := strings.TrimSpace(rawJSONFieldString(item, "id"))
+	if toolUseID == "" {
+		toolUseID = strings.TrimSpace(rawJSONFieldString(item, "tool_use_id"))
+	}
+	if toolUseID == "" {
+		toolUseID = strings.TrimSpace(rawJSONFieldString(item, "call_id"))
+	}
+	if toolUseID == "" {
+		toolUseID = strings.TrimSpace(rawJSONFieldString(item, "tool_call_id"))
+	}
+	if toolUseID == "" {
+		return nil, false, nil
+	}
+
+	toolName := strings.TrimSpace(rawJSONFieldString(item, "name"))
+	if toolName == "" {
+		if fnRaw, ok := item["function"]; ok {
+			var fnObj map[string]json.RawMessage
+			if err := json.Unmarshal(fnRaw, &fnObj); err == nil {
+				toolName = strings.TrimSpace(rawJSONFieldString(fnObj, "name"))
+			}
+		}
+	}
+	if toolName == "" {
+		return nil, false, nil
+	}
+
+	argsRaw := item["input"]
+	if len(strings.TrimSpace(string(argsRaw))) == 0 {
+		argsRaw = item["arguments"]
+	}
+	if len(strings.TrimSpace(string(argsRaw))) == 0 {
+		argsRaw = json.RawMessage(`{}`)
+	}
+
+	args, err := parseInlineToolUseArguments(argsRaw)
+	if err != nil {
+		return nil, false, fmt.Errorf("invalid inline tool_use input for %q: %w", toolName, err)
+	}
+
+	return &brtypes.ContentBlockMemberToolUse{
+		Value: brtypes.ToolUseBlock{
+			Name:      aws.String(toolName),
+			ToolUseId: aws.String(toolUseID),
+			Input:     document.NewLazyDocument(args),
+		},
+	}, true, nil
+}
+
+func parseInlineToolUseArguments(raw json.RawMessage) (any, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return map[string]any{}, nil
+	}
+
+	// Some clients encode arguments as JSON string.
+	if strings.HasPrefix(trimmed, "\"") {
+		var argsString string
+		if err := json.Unmarshal(raw, &argsString); err != nil {
+			return nil, err
+		}
+		argsString = strings.TrimSpace(argsString)
+		if argsString == "" {
+			return map[string]any{}, nil
+		}
+		var value any
+		if err := json.Unmarshal([]byte(argsString), &value); err == nil {
+			if _, ok := value.(map[string]any); ok {
+				return value, nil
+			}
+			return map[string]any{"value": value}, nil
+		}
+		return map[string]any{"value": argsString}, nil
+	}
+
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	if _, ok := value.(map[string]any); ok {
+		return value, nil
+	}
+	return map[string]any{"value": value}, nil
 }
 
 func buildToolResultContentBlock(message openai.ChatMessage) (brtypes.ContentBlock, error) {
