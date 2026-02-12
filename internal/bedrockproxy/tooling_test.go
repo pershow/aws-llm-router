@@ -412,6 +412,85 @@ func TestBuildBedrockMessagesWithAssistantInlineToolUseBlocks(t *testing.T) {
 	}
 }
 
+func TestToolArgumentNormalizerAppliesKnownAliases(t *testing.T) {
+	tools := []openai.Tool{
+		{
+			Type: "function",
+			Function: &openai.ToolFunction{
+				Name:       "Glob",
+				Parameters: json.RawMessage(`{"type":"object","properties":{"target_directory":{"type":"string"},"glob_pattern":{"type":"string"}},"required":["glob_pattern"]}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: &openai.ToolFunction{
+				Name:       "Write",
+				Parameters: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"contents":{"type":"string"}},"required":["path","contents"]}`),
+			},
+		},
+	}
+
+	normalizer := newToolArgumentNormalizer(tools)
+	if !normalizer.requiresBufferedOutput() {
+		t.Fatalf("expected normalizer to require buffered output when aliases are present")
+	}
+
+	toolCalls := []openai.ToolCall{
+		{
+			ID:   "call_1",
+			Type: "function",
+			Function: openai.ToolCallFunction{
+				Name:      "Glob",
+				Arguments: `{"pattern":"**/*.go","target_directory":"."}`,
+			},
+		},
+		{
+			ID:   "call_2",
+			Type: "function",
+			Function: openai.ToolCallFunction{
+				Name:      "Write",
+				Arguments: `{"path":"README.md","content":"hello"}`,
+			},
+		},
+	}
+
+	normalized := normalizer.normalizeToolCalls(toolCalls)
+	assertJSONEqual(t, normalized[0].Function.Arguments, `{"glob_pattern":"**/*.go","target_directory":"."}`)
+	assertJSONEqual(t, normalized[1].Function.Arguments, `{"path":"README.md","contents":"hello"}`)
+}
+
+func TestToolArgumentNormalizerNoOpWhenSchemaDoesNotRequireAlias(t *testing.T) {
+	tools := []openai.Tool{
+		{
+			Type: "function",
+			Function: &openai.ToolFunction{
+				Name:       "Write",
+				Parameters: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"contents":{"type":"string"}},"required":["path"]}`),
+			},
+		},
+	}
+
+	normalizer := newToolArgumentNormalizer(tools)
+	if normalizer.requiresBufferedOutput() {
+		t.Fatalf("did not expect buffered output when no alias rule is active")
+	}
+
+	toolCalls := []openai.ToolCall{
+		{
+			ID:   "call_1",
+			Type: "function",
+			Function: openai.ToolCallFunction{
+				Name:      "Write",
+				Arguments: `{"path":"README.md","content":"hello"}`,
+			},
+		},
+	}
+	normalized := normalizer.normalizeToolCalls(toolCalls)
+	if normalized[0].Function.Arguments != toolCalls[0].Function.Arguments {
+		t.Fatalf("expected arguments to remain unchanged, got %q", normalized[0].Function.Arguments)
+	}
+}
+
 func assertJSONEqual(t *testing.T, got, want string) {
 	t.Helper()
 

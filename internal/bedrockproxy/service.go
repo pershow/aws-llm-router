@@ -175,6 +175,7 @@ func (s *Service) Converse(ctx context.Context, request openai.ChatCompletionReq
 	// Fix messages: ensure tool_call IDs and fix missing tool responses
 	request.Messages = openai.EnsureToolCallIDs(request.Messages)
 	request.Messages = openai.FixMissingToolResponses(request.Messages)
+	toolArgNormalizer := newToolArgumentNormalizer(request.Tools)
 
 	messages, system, err := BuildBedrockMessages(request.Messages)
 	if err != nil {
@@ -232,7 +233,7 @@ func (s *Service) Converse(ctx context.Context, request openai.ChatCompletionReq
 	payload := extractOutputPayload(output.Output)
 	result := ChatResult{
 		Text:         payload.Text,
-		ToolCalls:    payload.ToolCalls,
+		ToolCalls:    toolArgNormalizer.normalizeToolCalls(payload.ToolCalls),
 		FinishReason: mapStopReason(output.StopReason),
 	}
 
@@ -258,6 +259,7 @@ func (s *Service) ConverseStream(
 	// Fix messages: ensure tool_call IDs and fix missing tool responses
 	request.Messages = openai.EnsureToolCallIDs(request.Messages)
 	request.Messages = openai.FixMissingToolResponses(request.Messages)
+	toolArgNormalizer := newToolArgumentNormalizer(request.Tools)
 
 	messages, system, err := BuildBedrockMessages(request.Messages)
 	if err != nil {
@@ -272,6 +274,7 @@ func (s *Service) ConverseStream(
 	forceToolUse := s.forceToolUse && !hasTool
 	bufferToolCallArgs := s.bufferToolCallArgs
 	s.mu.RUnlock()
+	effectiveBufferToolCallArgs := bufferToolCallArgs || toolArgNormalizer.requiresBufferedOutput()
 
 	toolConfig, err := buildToolConfiguration(request.Tools, request.ToolChoice, forceToolUse)
 	if err != nil {
@@ -430,8 +433,9 @@ func (s *Service) ConverseStream(
 					continue
 				}
 				toolCalls[toolCallIndex].Function.Arguments += *delta.Value.Input
-				// 与 bedrock-access-gateway 一致：默认按 delta 逐条转发；BUFFER_TOOL_CALL_ARGS=true 时缓冲，在 MessageStop 时一次性发送完整参数
-				if !bufferToolCallArgs {
+				// 与 bedrock-access-gateway 一致：默认按 delta 逐条转发；
+				// BUFFER_TOOL_CALL_ARGS=true 或需要参数兼容修正时缓冲，在 MessageStop 时一次性发送完整参数。
+				if !effectiveBufferToolCallArgs {
 					if err := onDelta(StreamDelta{
 						ToolCalls: []openai.ChatChunkToolCall{{
 							Index: toolCallIndex,
@@ -446,8 +450,11 @@ func (s *Service) ConverseStream(
 			}
 		case *brtypes.ConverseStreamOutputMemberMessageStop:
 			result.FinishReason = mapStopReason(value.Value.StopReason)
+			if len(toolCalls) > 0 {
+				toolCalls = toolArgNormalizer.normalizeToolCalls(toolCalls)
+			}
 			// BUFFER_TOOL_CALL_ARGS 时：在流结束前一次性发送完整 tool_calls 参数（组装好再发）
-			if bufferToolCallArgs && len(toolCalls) > 0 {
+			if effectiveBufferToolCallArgs && len(toolCalls) > 0 {
 				fullChunks := make([]openai.ChatChunkToolCall, 0, len(toolCalls))
 				for i, tc := range toolCalls {
 					args := tc.Function.Arguments
@@ -1026,6 +1033,183 @@ func rawJSONFieldString(item map[string]json.RawMessage, key string) string {
 		return out
 	}
 	return string(raw)
+}
+
+type toolArgumentNormalizer struct {
+	aliasByToolName map[string]map[string]string
+}
+
+func newToolArgumentNormalizer(tools []openai.Tool) toolArgumentNormalizer {
+	normalizer := toolArgumentNormalizer{
+		aliasByToolName: make(map[string]map[string]string),
+	}
+
+	for _, item := range tools {
+		fn := item.GetFunction()
+		if fn == nil {
+			continue
+		}
+		toolName := strings.ToLower(strings.TrimSpace(fn.Name))
+		if toolName == "" {
+			continue
+		}
+		aliases := deriveToolArgumentAliasesFromSchema(fn.Parameters)
+		if len(aliases) == 0 {
+			continue
+		}
+		normalizer.aliasByToolName[toolName] = aliases
+	}
+	return normalizer
+}
+
+func (n toolArgumentNormalizer) requiresBufferedOutput() bool {
+	return len(n.aliasByToolName) > 0
+}
+
+func (n toolArgumentNormalizer) normalizeToolCalls(toolCalls []openai.ToolCall) []openai.ToolCall {
+	if len(toolCalls) == 0 || len(n.aliasByToolName) == 0 {
+		return toolCalls
+	}
+
+	normalized := make([]openai.ToolCall, len(toolCalls))
+	copy(normalized, toolCalls)
+
+	for index := range normalized {
+		toolName := strings.ToLower(strings.TrimSpace(normalized[index].Function.Name))
+		aliases, ok := n.aliasByToolName[toolName]
+		if !ok || len(aliases) == 0 {
+			continue
+		}
+
+		argsRaw := strings.TrimSpace(normalized[index].Function.Arguments)
+		if argsRaw == "" {
+			continue
+		}
+
+		var payload any
+		if err := json.Unmarshal([]byte(argsRaw), &payload); err != nil {
+			continue
+		}
+		argsObject, ok := payload.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if !applyArgumentAliases(argsObject, aliases) {
+			continue
+		}
+
+		blob, err := json.Marshal(argsObject)
+		if err != nil {
+			continue
+		}
+		normalized[index].Function.Arguments = string(blob)
+	}
+
+	return normalized
+}
+
+func deriveToolArgumentAliasesFromSchema(schemaRaw json.RawMessage) map[string]string {
+	schemaText := strings.TrimSpace(string(schemaRaw))
+	if schemaText == "" || schemaText == "null" {
+		return nil
+	}
+
+	var schema map[string]any
+	if err := json.Unmarshal(schemaRaw, &schema); err != nil {
+		return nil
+	}
+
+	required := schemaStringSet(schema["required"])
+	properties := schemaStringSetFromMapKeys(schema["properties"])
+
+	aliases := make(map[string]string)
+	addAliasWhenRequired(properties, required, aliases, "pattern", "glob_pattern")
+	addAliasWhenRequired(properties, required, aliases, "content", "contents")
+
+	if len(aliases) == 0 {
+		return nil
+	}
+	return aliases
+}
+
+func addAliasWhenRequired(
+	properties map[string]struct{},
+	required map[string]struct{},
+	aliases map[string]string,
+	sourceKey string,
+	targetKey string,
+) {
+	if _, ok := properties[targetKey]; !ok {
+		return
+	}
+	if _, ok := required[targetKey]; !ok {
+		return
+	}
+	if _, exists := properties[sourceKey]; exists {
+		return
+	}
+	aliases[sourceKey] = targetKey
+}
+
+func schemaStringSet(raw any) map[string]struct{} {
+	set := make(map[string]struct{})
+	switch value := raw.(type) {
+	case []any:
+		for _, item := range value {
+			str, ok := item.(string)
+			if !ok {
+				continue
+			}
+			str = strings.TrimSpace(str)
+			if str == "" {
+				continue
+			}
+			set[str] = struct{}{}
+		}
+	case []string:
+		for _, item := range value {
+			str := strings.TrimSpace(item)
+			if str == "" {
+				continue
+			}
+			set[str] = struct{}{}
+		}
+	}
+	return set
+}
+
+func schemaStringSetFromMapKeys(raw any) map[string]struct{} {
+	set := make(map[string]struct{})
+	props, ok := raw.(map[string]any)
+	if !ok {
+		return set
+	}
+	for key := range props {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		set[key] = struct{}{}
+	}
+	return set
+}
+
+func applyArgumentAliases(args map[string]any, aliases map[string]string) bool {
+	changed := false
+	for sourceKey, targetKey := range aliases {
+		sourceValue, sourceExists := args[sourceKey]
+		if !sourceExists {
+			continue
+		}
+		if _, targetExists := args[targetKey]; targetExists {
+			continue
+		}
+		args[targetKey] = sourceValue
+		delete(args, sourceKey)
+		changed = true
+	}
+	return changed
 }
 
 func buildToolConfiguration(tools []openai.Tool, rawToolChoice json.RawMessage, forceToolUse bool) (*brtypes.ToolConfiguration, error) {
